@@ -132,6 +132,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
             }
 
             Some(AskRessource::UserDisconnected(username)) => {
+                /* Remove user for connected clients array */
                 let index = connected_clients
                     .iter()
                     .position(|name| *name == username)
@@ -139,6 +140,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                 connected_clients.remove(index);
 
+                /* Remove User from channels */
                 for channel_index in 0..channels.len() {
                     if check_user_in_channel(&channels, channel_index, username.clone()).is_some() {
                         let ressource = BroadcastMessage::Leave(
@@ -149,10 +151,14 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         if channels[channel_index].sender.send(ressource).is_err() {
                             println!("!! An error occured !!\n");
                         }
+
+                        if channels[channel_index].sender.into_subscribers().is_empty(){
+                            channels.swap_remove(channel_index);
+                        }
                     }
                 }
 
-                
+
             }
 
             Some(AskRessource::TransferMessageToChannel(username, channel_name, content, resp)) => {
@@ -187,6 +193,10 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                         if channels[index].sender.send(ressource).is_err() {
                             println!("!! An error occured !!\n");
+                        }
+
+                        if channels[index].sender.into_subscribers().is_empty(){
+                            channels.swap_remove(index);
                         }
                     }
                 }
