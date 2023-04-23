@@ -19,6 +19,8 @@ use tokio::sync::oneshot;
 
 /* todo Suppression du Channel privé d'un client */
 
+/* feat: Un utilisateur ne peut pas envoyer de message privé à lui même */
+
 enum AskRessource {
     JoinServer(String, oneshot::Sender<bool>),
     CreatePrivateChannel(
@@ -167,7 +169,9 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                 /* Remove User from channels && remove channel if there is no user*/
                 for channel_index in 0..channels.len() {
-                    if check_user_in_channel(&channels, channel_index, username.clone()).is_some() {
+
+                    let private_channel_name = format!("{username}-privet-channel");
+                    if check_user_in_channel(&channels, channel_index, username.clone()).is_some() || channels[channel_index].name == private_channel_name{
                         let ressource = BroadcastMessage::Leave(
                             username.clone(),
                             channels[channel_index].name.clone(),
@@ -181,6 +185,10 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             channels.swap_remove(channel_index);
                         }
                     }
+                }
+
+                for channel_index in 0..channels.len() {
+                    println!("--> {}", channels[channel_index].name);
                 }
             }
 

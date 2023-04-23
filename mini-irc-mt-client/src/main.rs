@@ -115,7 +115,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     Some(KeyReaction::UserInput(input)) => {
                         // On gère l'input de l'utilisateur.
-                        match handle_user_input(input, &mut app) {
+                        match handle_user_input(nickname.clone(), input, &mut app) {
                             // Requête à envoyer au serveur.
                             Ok(Some(req)) => {
                                 let _ = ui_output_tx.send(req);
