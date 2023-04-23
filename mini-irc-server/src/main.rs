@@ -17,10 +17,14 @@ use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 
-/* todo Supprimer le channel si tout le monde est parti */
+/* todo Suppression du Channel privé d'un client */
 
 enum AskRessource {
     JoinServer(String, oneshot::Sender<bool>),
+    CreatePrivateChannel(
+        String,
+        oneshot::Sender<BroadcastReceiverWithList<BroadcastMessage, String>>,
+    ),
     AskToJoinChannel(
         String,
         String,
@@ -29,11 +33,13 @@ enum AskRessource {
     AskToLeaveChannel(String, String, oneshot::Sender<bool>),
     UserDisconnected(String),
     TransferMessageToChannel(String, String, String, oneshot::Sender<bool>),
+    TransferMessageToAClient(String, String, String, oneshot::Sender<bool>),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum BroadcastMessage {
-    Message(String, String, String),
+    MessageToChannel(String, String, String),
+    DirectMessage(String, String),
     /// Ack de sortie d'un channel.
     Leave(String, String, bool),
     NewUserJoin(String, String),
@@ -94,6 +100,25 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     connected_clients.push(username.clone());
                 }
             }
+
+            Some(AskRessource::CreatePrivateChannel(username, resp)) => {
+                let mut new_sender: BroadcastSenderWithList<BroadcastMessage, String> =
+                    BroadcastSenderWithList::new(50);
+                let receiver = new_sender.subscribe(username.clone());
+
+                let formatted_channel_name = format!("{username}-privet-channel");
+                let new_channel = Channel {
+                    name: formatted_channel_name,
+                    sender: new_sender,
+                };
+
+                if resp.send(receiver).is_err() {
+                    println!("!! An error occured !!");
+                } else {
+                    channels.push(new_channel);
+                }
+            }
+
             Some(AskRessource::AskToJoinChannel(channel_name, username, resp)) => {
                 match check_channel_exists(&channels, channel_name.clone()) {
                     Some(index) => {
@@ -140,7 +165,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                 connected_clients.remove(index);
 
-                /* Remove User from channels */
+                /* Remove User from channels && remove channel if there is no user*/
                 for channel_index in 0..channels.len() {
                     if check_user_in_channel(&channels, channel_index, username.clone()).is_some() {
                         let ressource = BroadcastMessage::Leave(
@@ -152,13 +177,11 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             println!("!! An error occured !!\n");
                         }
 
-                        if channels[channel_index].sender.into_subscribers().is_empty(){
+                        if channels[channel_index].sender.into_subscribers().is_empty() {
                             channels.swap_remove(channel_index);
                         }
                     }
                 }
-
-
             }
 
             Some(AskRessource::TransferMessageToChannel(username, channel_name, content, resp)) => {
@@ -169,7 +192,8 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 if let Some(index) = channel_index {
                     if check_user_in_channel(&channels, index, username.clone()).is_some() {
                         found = true;
-                        let ressource = BroadcastMessage::Message(username, channel_name, content);
+                        let ressource =
+                            BroadcastMessage::MessageToChannel(username, channel_name, content);
 
                         if channels[index].sender.send(ressource).is_err() {
                             println!("!! An error occured !!\n");
@@ -181,6 +205,35 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     println!("!! An error occured !!\n");
                 }
             }
+
+            Some(AskRessource::TransferMessageToAClient(
+                sender_name,
+                receiver_name,
+                message,
+                resp,
+            )) => {
+                let mut found = false;
+                let channel_name = format!("{receiver_name}-privet-channel");
+
+                let channel_index = check_channel_exists(&channels, channel_name.clone());
+
+                if let Some(index) = channel_index {
+                    found = true;
+
+                    let ressource =
+                        BroadcastMessage::DirectMessage(sender_name, message);
+
+                    if channels[index].sender.send(ressource).is_err() {
+                        println!("!! An error occured !!\n");
+                    }
+                }
+
+                if resp.send(found).is_err() {
+                    println!("!! An error occured !!\n");
+                }
+
+            }
+
             Some(AskRessource::AskToLeaveChannel(username, channel_name, resp)) => {
                 let mut found = false;
                 let channel_index = check_channel_exists(&channels, channel_name.clone());
@@ -195,7 +248,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             println!("!! An error occured !!\n");
                         }
 
-                        if channels[index].sender.into_subscribers().is_empty(){
+                        if channels[index].sender.into_subscribers().is_empty() {
                             channels.swap_remove(index);
                         }
                     }
@@ -220,7 +273,7 @@ async fn handle_waiting_for_messages(
     let mut finished = false;
     while !finished {
         match broadcast_receiver.recv().await {
-            Ok(BroadcastMessage::Message(user_name, chan, content)) => {
+            Ok(BroadcastMessage::MessageToChannel(user_name, chan, content)) => {
                 let op = ChanOp::Message {
                     from: user_name,
                     content,
@@ -228,6 +281,11 @@ async fn handle_waiting_for_messages(
 
                 respond_to_client(writer_tx, Response::Channel { op, chan }).await;
             }
+
+            Ok(BroadcastMessage::DirectMessage(sender_name, message)) => {
+                respond_to_client(writer_tx, Response::DirectMessage { from: sender_name, content:message}).await;
+            }
+
             Ok(BroadcastMessage::Leave(user_name, channel, suddenly_interrupt)) => {
                 /* Current user wants to leave */
 
@@ -350,8 +408,43 @@ async fn handle_client(
                         }
                     }
                 }
-                _ => {
-                    println!("Not yet implemented \n");
+                MessageReceiver::User(receiver_name) => {
+                    let (tx, rx) = oneshot::channel();
+                    let ressource = AskRessource::TransferMessageToAClient(
+                        username.clone(),
+                        receiver_name.clone(),
+                        content,
+                        tx,
+                    );
+
+                    match thread_tx.send(ressource).await {
+                        Ok(_) => match rx.await {
+                            Ok(true) => {
+                                println!(
+                                    "{} sent a private message to {} \n",
+                                    username.clone(),
+                                    receiver_name.clone()
+                                );
+                            }
+
+                            Ok(false) => {
+                                respond_to_client(
+                                    writer_tx,
+                                    Response::Error(
+                                        "The receiver is not found on the server".to_string(),
+                                    ),
+                                )
+                                .await;
+                            }
+                            Err(e) => {
+                                println!("!! An error occured in send: {e} !!");
+                            }
+                        },
+
+                        Err(e) => {
+                            println!("!! An error occured in send: {e} !!");
+                        }
+                    }
                 }
             },
             Ok(Some(Request::LeaveChan(channel_name))) => {
@@ -427,6 +520,37 @@ async fn is_client_accepted(
                                 )
                                 .await;
 
+                                /* Create a channel for Client so that he could receive private message */
+                                let (tx, rx) = oneshot::channel();
+                                let ressource =
+                                    AskRessource::CreatePrivateChannel(username.clone(), tx);
+                                match thread_tx.send(ressource).await {
+                                    Ok(_) => match rx.await {
+                                        Ok(mut broadcast_receiver) => {
+                                            let mut copy_writer_tx = writer_tx.clone();
+                                            let copy_username = username.clone();
+
+                                            tokio::spawn(async move {
+                                                handle_waiting_for_messages(
+                                                    copy_username,
+                                                    &mut broadcast_receiver,
+                                                    &mut copy_writer_tx,
+                                                )
+                                                .await;
+                                                drop(broadcast_receiver);
+                                            });
+                                        }
+
+                                        Err(e) => {
+                                            println!("!! An error occured in creating a private channel : {e} !!");
+                                        }
+                                    },
+
+                                    Err(e) => {
+                                        println!("!! An error occured in creating a private channel : {e} !!");
+                                    }
+                                }
+
                                 return Some(username.clone());
                             } else {
                                 println!("-- Connection from {} refused --\n", username);
@@ -470,7 +594,7 @@ async fn is_client_accepted(
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("-- Welcome on the server --\n");
 
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    let listener = TcpListener::bind("127.0.0.1:2027").await?;
 
     let (tx, mut rx): (Sender<AskRessource>, Receiver<AskRessource>) = mpsc::channel(100);
 
