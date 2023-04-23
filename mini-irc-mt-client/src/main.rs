@@ -5,6 +5,7 @@ use mini_irc_ui::{App, KeyReaction};
 use std::env;
 use std::error::Error;
 use std::net::Shutdown;
+use std::ops::{DerefMut, Deref};
 use std::thread::spawn;
 use std::time::Instant;
 
@@ -137,6 +138,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                 match response {
                     Response::DirectMessage { from, content } => {
                         let user_tab = format!("@{from}");
+                        let users = vec![nickname.clone(), from.clone()];
+                        app.add_tab_with_users(user_tab.clone(), users);
                         app.push_message(from, content, user_tab.clone());
                     }
                     Response::AckJoin { chan, users } => {
@@ -156,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             ChanOp::UserDel(nickname) => app.remove_user(&nickname, chan),
                         }
                     }
+                    
                     _ => {
                         // on, ignore pour l'instant
                         todo!()

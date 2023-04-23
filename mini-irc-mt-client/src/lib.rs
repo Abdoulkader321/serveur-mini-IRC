@@ -46,6 +46,11 @@ pub fn handle_user_input(input: String, app: &mut App) -> Result<Option<Request>
         // On a reçu un message pour le tab courant.
         // Pour le moment, on ne gère que le cas des channels.
 
+        if app.get_current_tab().starts_with('@'){
+            // Rajouter le message envoyé dans le tab
+            app.push_message("myself".into(), input.clone(), app.get_current_tab());
+        }
+
         Ok(Some(Request::Message {
             to: app.get_current_tab().parse()?,
             content: input,
