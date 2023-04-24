@@ -2,6 +2,12 @@
 //! les clients mini-irc et le serveur mini-irc. Des communications via sockets "standards"
 //! ou asynchrones (uniquement via [tokio]) sont supportés.
 
+use aes_gcm::{
+    aead::{Aead, KeyInit, OsRng},
+    Aes256Gcm, Nonce,
+};
+use anyhow::Error;
+use rand::Rng;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
@@ -13,9 +19,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast;
 use tracing::info;
 
+pub type Key = Option<[u8; 32]>;
+
 ///  Une requête mini-irc, c'est-à-dire un message envoyé par le client au serveur.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum Request {
+    Handshake([u8; 32]),
     /// Demande de connexion avec le nom d'utilisateur fourni.
     Connect(String),
     /// Demande de rejoindre un canal mini-irc donné. S'il n'existe pas encore, le canal est créé.
@@ -65,12 +74,22 @@ pub enum ChanOp {
 /// Une réponse mini-irc, c'est-à-dire un message envoyé par le serveur au client.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum Response {
+    Handshake([u8; 32]),
     /// Message direct d'un utilisateur.
-    DirectMessage { from: String, content: String },
+    DirectMessage {
+        from: String,
+        content: String,
+    },
     /// Message d'un channel (administratif ou utilisateur)
-    Channel { op: ChanOp, chan: String },
+    Channel {
+        op: ChanOp,
+        chan: String,
+    },
     /// Ack d'entrée dans un channel.
-    AckJoin { chan: String, users: Vec<String> },
+    AckJoin {
+        chan: String,
+        users: Vec<String>,
+    },
     /// Ack de sortie d'un channel.
     AckLeave(String),
     /// Ack de connection, réponse indiquant que la demande a pu être correctement traitée.
@@ -132,7 +151,7 @@ where
     /// Renvoie une erreur en cas d'erreur du canal sous-jacent, et
     /// `None` en cas d'erreur de déserialisation.
     #[tracing::instrument(level = "debug")]
-    pub fn recv(&mut self) -> std::io::Result<Option<T>> {
+    pub fn recv(&mut self, supplied_key: Key) -> std::io::Result<Option<T>> {
         // Read the size, from u32
         info!("Receiving data");
         let mut size = [0; 4];
@@ -142,8 +161,21 @@ where
         let mut buf = vec![0; size as usize];
         self.stream.read_exact(&mut buf)?;
 
-        info!("Data received");
-        // Deserialize the value, discard the potential deserializing error
+        if let Some(key) = supplied_key {
+            //buf = decrypt(&buf, &key);
+            match decrypt(&buf, &key) {
+                Ok(plaintext) => {
+                    info!("Data received");
+                    // Deserialize the value, discard the potential deserializing error
+                    return Ok(bincode::deserialize(&plaintext).ok());
+                }
+                Err(e) => {
+                    info!("Data received but malformed");
+                    return Ok(None);
+                }
+            }
+        }
+
         Ok(bincode::deserialize(&buf).ok())
     }
 }
@@ -197,8 +229,13 @@ where
     /// Envoie un type via le canal sélectionné. Une erreur est envoyée en cas
     /// d'erreur du canal sous-jacent.
     #[tracing::instrument(level = "info")]
-    pub fn send(&mut self, value: &T) -> std::io::Result<()> {
-        let data: Vec<u8> = bincode::serialize(value).unwrap();
+    pub fn send(&mut self, value: &T, supplied_key: Key) -> std::io::Result<()> {
+        let mut data: Vec<u8> = bincode::serialize(value).unwrap();
+
+        if let Some(key) = supplied_key {
+            data = encrypt(&data, &key);
+        }
+
         // Send the size, as u32
         self.stream.write_all(&(data.len() as u32).to_be_bytes())?;
         self.stream.write_all(&data)
@@ -262,7 +299,7 @@ where
     /// Renvoie une erreur en cas d'erreur du canal sous-jacent, et
     /// `None` en cas d'erreur de déserialisation.
     #[tracing::instrument(level = "debug")]
-    pub async fn recv(&mut self) -> std::io::Result<Option<T>> {
+    pub async fn recv(&mut self, supplied_key: Key) -> std::io::Result<Option<T>> {
         // Read the size, from u32
         info!("Receiving data");
         let mut size = [0; 4];
@@ -272,6 +309,21 @@ where
         // Prepare a buffer
         let mut buf = vec![0; size as usize];
         self.stream.read_exact(&mut buf).await?;
+
+        if let Some(key) = supplied_key {
+            match decrypt(&buf, &key){
+                Ok(plaintext) => {
+                    info!("Data received: {:?}", plaintext);
+                    return Ok(bincode::deserialize(&plaintext).ok());
+                }
+
+                Err(e) => {
+                    info!("Received invalid data");
+                    return Ok(None);
+                }
+            }
+        }
+
         let data = bincode::deserialize(&buf).ok();
 
         match data.as_ref() {
@@ -343,8 +395,12 @@ where
     /// Envoie un type via le canal sélectionné. Une erreur est envoyée en cas
     /// d'erreur du canal sous-jacent.
     #[tracing::instrument(level = "debug")]
-    pub async fn send(&mut self, value: &T) -> std::io::Result<()> {
-        let data: Vec<u8> = bincode::serialize(value).unwrap();
+    pub async fn send(&mut self, value: &T, supplied_key: Key) -> std::io::Result<()> {
+        let mut data: Vec<u8> = bincode::serialize(value).unwrap();
+
+        if let Some(key) = supplied_key {
+            data = encrypt(&data, &key);
+        }
         // Send the size, as u32
         self.stream
             .write_all(&(data.len() as u32).to_be_bytes())
@@ -468,4 +524,24 @@ where
             .unwrap()
             .retain(|v| v != &self.identifier);
     }
+}
+
+fn encrypt(data_to_encrypt: &[u8], key: &[u8]) -> Vec<u8> {
+    let cipher = Aes256Gcm::new_from_slice(key).unwrap();
+
+    let mut random_slice = [0_u8; 12];
+    rand::rngs::OsRng.fill(&mut random_slice);
+
+    let nonce = aes_gcm::Nonce::from_slice(&random_slice);
+    let ciphertext = cipher.encrypt(nonce, data_to_encrypt.as_ref()).unwrap();
+
+    [nonce.to_vec(), ciphertext].concat()
+}
+
+fn decrypt(data_to_decrypt: &[u8], key: &[u8]) -> Result<Vec<u8>, aes_gcm::Error> {
+    let cipher = Aes256Gcm::new((key).into());
+
+    //let plaintext = cipher.decrypt(data_to_decrypt[..12].into(), data_to_decrypt[12..].as_ref()).unwrap();
+
+    cipher.decrypt(data_to_decrypt[..12].into(), data_to_decrypt[12..].as_ref())
 }

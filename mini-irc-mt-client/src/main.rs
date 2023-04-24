@@ -1,10 +1,12 @@
 use crossterm::event;
 use mini_irc_mt::handle_user_input;
-use mini_irc_protocol::{ChanOp, Request, Response, TypedReader, TypedWriter};
+use mini_irc_protocol::{ChanOp, Request, Response, TypedReader, TypedWriter, Key};
 use mini_irc_ui::{App, KeyReaction};
+use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 use std::env;
 use std::error::Error;
 use std::net::Shutdown;
+use rand_core::OsRng;
 use std::ops::{DerefMut, Deref};
 use std::thread::spawn;
 use std::time::Instant;
@@ -26,18 +28,36 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
+    // Diffie hellman keys
+    let client_secret = EphemeralSecret::new(OsRng);
+    let client_public = PublicKey::from(&client_secret);
+    let shared_key: Key;
+
     let nickname = &args[2];
     // On se connecte au serveur
     let tcp_stream = std::net::TcpStream::connect(&args[1])?;
 
-    // On envoie le nom d'utilisateur, pour vérifier qu'il n'est pas déjà pris.
+    
     let mut typed_tcp_tx = TypedWriter::new(tcp_stream.try_clone()?);
     let mut typed_tcp_rx = TypedReader::new(tcp_stream.try_clone()?);
 
-    typed_tcp_tx.send(&Request::Connect(nickname.clone()))?;
+    // On fait du diffie_hellman et vérifie que ça s'est bien passé
+    typed_tcp_tx.send(&Request::Handshake(client_public.to_bytes()), None)?;
+    let diffie_hellman_response = typed_tcp_rx.recv(None)?;
+
+    if let Some(Response::Handshake(server_public)) = diffie_hellman_response {
+        shared_key = Some(client_secret.diffie_hellman(&PublicKey::from(server_public)).to_bytes())
+
+    }else{
+        return Ok(());
+
+    }
+
+    // On envoie le nom d'utilisateur, pour vérifier qu'il n'est pas déjà pris.
+    typed_tcp_tx.send(&Request::Connect(nickname.clone()), shared_key)?;
 
     // On vérifie la réponse
-    let nickname_response = typed_tcp_rx.recv()?;
+    let nickname_response = typed_tcp_rx.recv(shared_key)?;
 
     match nickname_response {
         Some(Response::AckConnect(_)) => { /* Tout s'est bien passé */ }
@@ -51,7 +71,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     // Et puis, on join le chan general
-    typed_tcp_tx.send(&Request::JoinChan("general".into()))?;
+    typed_tcp_tx.send(&Request::JoinChan("general".into()), shared_key)?;
 
     // Ok, tout s'est bien passé !
 
@@ -65,7 +85,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let tcp_reader = {
         let ui_input_tx = ui_input_tx.clone();
         spawn(move || {
-            while let Ok(Some(response)) = typed_tcp_rx.recv() {
+            while let Ok(Some(response)) = typed_tcp_rx.recv(shared_key) {
                 if ui_input_tx.send(Event::ServerResponse(response)).is_err() {
                     // Il y a eu une erreur, on arrête tout
                     break;
@@ -76,7 +96,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // L'inverse pour la partie émission : on lit sur le channel, et on envoie sur la socket
     let tcp_writer = spawn(move || {
         while let Ok(request) = ui_output_rx.recv() {
-            if typed_tcp_tx.send(&request).is_err() {
+            if typed_tcp_tx.send(&request, shared_key).is_err() {
                 // Il y a eu une erreur, on arrête tout
                 break;
             }

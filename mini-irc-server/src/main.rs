@@ -6,16 +6,21 @@ use mini_irc_protocol::AsyncTypedWriter;
 use mini_irc_protocol::BroadcastReceiverWithList;
 use mini_irc_protocol::BroadcastSenderWithList;
 use mini_irc_protocol::ChanOp;
+use mini_irc_protocol::Key;
 use mini_irc_protocol::MessageReceiver;
 use mini_irc_protocol::Request;
 use mini_irc_protocol::Response;
+use rand_core::OsRng;
+use x25519_dalek::SharedSecret;
 use std::error::Error;
+use std::ops::Deref;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
+use x25519_dalek::{EphemeralSecret, PublicKey};
 
 /* todo Suppression du Channel privé d'un client */
 
@@ -70,16 +75,16 @@ fn check_user_in_channel(
         .position(|name| *name == username)
 }
 
-async fn handle_writer(writer: &mut OwnedWriteHalf, rx: &mut Receiver<Response>) {
+async fn handle_writer(writer: &mut OwnedWriteHalf, rx: &mut Receiver<(Response, Key)>) {
     let mut typed_writer = AsyncTypedWriter::<_, Response>::new(writer);
 
-    while let Some(object_to_send) = rx.recv().await {
-        typed_writer.send(&object_to_send).await.unwrap();
+    while let Some((object_to_send, key)) = rx.recv().await {
+        typed_writer.send(&object_to_send, key).await.unwrap();
     }
 }
 
-async fn respond_to_client(writer_tx: &mut Sender<Response>, object_to_send: Response) {
-    if writer_tx.send(object_to_send).await.is_err() {
+async fn respond_to_client(writer_tx: &mut Sender<(Response, Key)>, object_to_send: Response, key:Key) {
+    if writer_tx.send((object_to_send, key)).await.is_err() {
         println!("!! An error occured !!");
     }
 }
@@ -169,9 +174,10 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                 /* Remove User from channels && remove channel if there is no user*/
                 for channel_index in 0..channels.len() {
-
                     let private_channel_name = format!("{username}-privet-channel");
-                    if check_user_in_channel(&channels, channel_index, username.clone()).is_some() || channels[channel_index].name == private_channel_name{
+                    if check_user_in_channel(&channels, channel_index, username.clone()).is_some()
+                        || channels[channel_index].name == private_channel_name
+                    {
                         let ressource = BroadcastMessage::Leave(
                             username.clone(),
                             channels[channel_index].name.clone(),
@@ -186,10 +192,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         }
                     }
                 }
-
-                for channel_index in 0..channels.len() {
-                    println!("--> {}", channels[channel_index].name);
-                }
+               
             }
 
             Some(AskRessource::TransferMessageToChannel(username, channel_name, content, resp)) => {
@@ -228,8 +231,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 if let Some(index) = channel_index {
                     found = true;
 
-                    let ressource =
-                        BroadcastMessage::DirectMessage(sender_name, message);
+                    let ressource = BroadcastMessage::DirectMessage(sender_name, message);
 
                     if channels[index].sender.send(ressource).is_err() {
                         println!("!! An error occured !!\n");
@@ -239,7 +241,6 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 if resp.send(found).is_err() {
                     println!("!! An error occured !!\n");
                 }
-
             }
 
             Some(AskRessource::AskToLeaveChannel(username, channel_name, resp)) => {
@@ -276,7 +277,8 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 async fn handle_waiting_for_messages(
     username: String,
     broadcast_receiver: &mut BroadcastReceiverWithList<BroadcastMessage, String>,
-    writer_tx: &mut Sender<Response>,
+    writer_tx: &mut Sender<(Response, Key)>,
+    key: Key
 ) {
     let mut finished = false;
     while !finished {
@@ -287,11 +289,18 @@ async fn handle_waiting_for_messages(
                     content,
                 };
 
-                respond_to_client(writer_tx, Response::Channel { op, chan }).await;
+                respond_to_client(writer_tx, Response::Channel { op, chan }, key).await;
             }
 
             Ok(BroadcastMessage::DirectMessage(sender_name, message)) => {
-                respond_to_client(writer_tx, Response::DirectMessage { from: sender_name, content:message}).await;
+                respond_to_client(
+                    writer_tx,
+                    Response::DirectMessage {
+                        from: sender_name,
+                        content: message,
+                    },key
+                )
+                .await;
             }
 
             Ok(BroadcastMessage::Leave(user_name, channel, suddenly_interrupt)) => {
@@ -301,7 +310,7 @@ async fn handle_waiting_for_messages(
                     finished = true;
 
                     if !suddenly_interrupt {
-                        respond_to_client(writer_tx, Response::AckLeave(channel)).await;
+                        respond_to_client(writer_tx, Response::AckLeave(channel), key).await;
                     }
                 } else {
                     let chan_op = ChanOp::UserDel(user_name);
@@ -310,7 +319,7 @@ async fn handle_waiting_for_messages(
                         Response::Channel {
                             op: chan_op,
                             chan: channel,
-                        },
+                        },key
                     )
                     .await;
                 }
@@ -318,7 +327,7 @@ async fn handle_waiting_for_messages(
             Ok(BroadcastMessage::NewUserJoin(user_name, chan)) => {
                 if username != user_name {
                     let op = ChanOp::UserAdd(user_name);
-                    respond_to_client(writer_tx, Response::Channel { op, chan }).await;
+                    respond_to_client(writer_tx, Response::Channel { op, chan }, key).await;
                 }
             }
             _ => {}
@@ -329,13 +338,14 @@ async fn handle_waiting_for_messages(
 async fn handle_client(
     username: String,
     reader: &mut OwnedReadHalf,
-    writer_tx: &mut Sender<Response>,
+    writer_tx: &mut Sender<(Response, Key)>,
     thread_tx: &mut Sender<AskRessource>,
+    key: Key
 ) {
     let mut typed_reader = AsyncTypedReader::<_, Request>::new(reader);
 
     loop {
-        match typed_reader.recv().await {
+        match typed_reader.recv(key).await {
             Ok(Some(Request::JoinChan(channel_name))) => {
                 // The user wants to join a channel
 
@@ -350,8 +360,8 @@ async fn handle_client(
                                 writer_tx,
                                 Response::AckJoin {
                                     chan: channel_name.clone(),
-                                    users: broadcast_receiver.into_subscribers(),
-                                },
+                                    users: broadcast_receiver.into_subscribers()
+                                },key
                             )
                             .await;
 
@@ -362,7 +372,7 @@ async fn handle_client(
                                 handle_waiting_for_messages(
                                     copy_username,
                                     &mut broadcast_receiver,
-                                    &mut copy_writer_tx,
+                                    &mut copy_writer_tx, key
                                 )
                                 .await;
                                 drop(broadcast_receiver);
@@ -396,7 +406,7 @@ async fn handle_client(
                                     Response::Error(
                                         "You must ask to join to channel OR channel not found"
                                             .to_string(),
-                                    ),
+                                    ),key
                                 )
                                 .await;
                             }
@@ -440,7 +450,7 @@ async fn handle_client(
                                     writer_tx,
                                     Response::Error(
                                         "The receiver is not found on the server".to_string(),
-                                    ),
+                                    ),key
                                 )
                                 .await;
                             }
@@ -472,7 +482,7 @@ async fn handle_client(
                                 Response::Error(
                                     "You must ask to join to channel OR channel not found"
                                         .to_string(),
-                                ),
+                                ),key
                             )
                             .await;
                         }
@@ -502,14 +512,42 @@ async fn handle_client(
     }
 }
 
+async fn diffie_hellman_succeeded(
+    server_public: &[u8; 32],
+    reader: &mut OwnedReadHalf,
+    writer_tx: &mut Sender<(Response, Key)>,
+    thread_tx: &mut Sender<AskRessource>,
+) -> Option<[u8; 32]> {
+    let mut typed_reader = AsyncTypedReader::<_, Request>::new(reader);
+
+    match typed_reader.recv(None).await {
+        Ok(Some(Request::Handshake(client_public))) => {
+            respond_to_client(writer_tx, Response::Handshake(*server_public), None).await;
+
+            Some(client_public)
+        }
+
+        Ok(_) => {
+            respond_to_client(
+                writer_tx,
+                Response::Error("We must firstly exchange keys".to_string()), None
+            )
+            .await;
+            None
+        }
+        _ => None,
+    }
+}
+
 async fn is_client_accepted(
     reader: &mut OwnedReadHalf,
-    writer_tx: &mut Sender<Response>,
+    writer_tx: &mut Sender<(Response, Key)>,
     thread_tx: &mut Sender<AskRessource>,
+    key : Key
 ) -> Option<String> {
     let mut typed_reader = AsyncTypedReader::<_, Request>::new(reader);
 
-    match typed_reader.recv().await {
+    match typed_reader.recv(key).await {
         Ok(Some(connection)) => {
             if let Request::Connect(username) = connection {
                 let (tx, rx) = oneshot::channel();
@@ -525,6 +563,7 @@ async fn is_client_accepted(
                                 respond_to_client(
                                     writer_tx,
                                     Response::AckConnect(username.clone()),
+                                    key
                                 )
                                 .await;
 
@@ -543,6 +582,7 @@ async fn is_client_accepted(
                                                     copy_username,
                                                     &mut broadcast_receiver,
                                                     &mut copy_writer_tx,
+                                                    key
                                                 )
                                                 .await;
                                                 drop(broadcast_receiver);
@@ -569,6 +609,7 @@ async fn is_client_accepted(
                                         "Another user with the same name already exist!"
                                             .to_string(),
                                     ),
+                                    key
                                 )
                                 .await;
                             }
@@ -585,7 +626,7 @@ async fn is_client_accepted(
                 println!("-- One user do not respect the protocol : quicked out --\n");
                 respond_to_client(
                     writer_tx,
-                    Response::Error("You must respect the protocol".to_string()),
+                    Response::Error("You must respect the protocol".to_string()),key
                 )
                 .await;
             }
@@ -616,23 +657,40 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let (mut reader, mut writer) = socket.into_split();
 
-        let (tx_writer, mut rx_writer): (Sender<Response>, Receiver<Response>) = mpsc::channel(100);
+        let (tx_writer, mut rx_writer): (Sender<(Response, Key)>, Receiver<(Response, Key)>) = mpsc::channel(100);
+
+        // Diffie hellman keys
+        let server_secret = EphemeralSecret::new(OsRng);
+        let server_public = PublicKey::from(&server_secret);
 
         tokio::spawn(async move {
             handle_writer(&mut writer, &mut rx_writer).await;
         });
 
         tokio::spawn(async move {
-            if let Some(username) =
-                is_client_accepted(&mut reader, &mut tx_writer.clone(), &mut thread_tx).await
+            if let Some(client_public) = diffie_hellman_succeeded(
+                server_public.as_bytes(),
+                &mut reader,
+                &mut tx_writer.clone(),
+                &mut thread_tx,
+            )
+            .await
             {
-                handle_client(
-                    username,
-                    &mut reader,
-                    &mut tx_writer.clone(),
-                    &mut thread_tx,
-                )
-                .await;
+                let shared_key = server_secret.diffie_hellman(&PublicKey::from(client_public)).to_bytes();
+                let shared_key = Some(shared_key);            
+
+                if let Some(username) =
+                    is_client_accepted(&mut reader, &mut tx_writer.clone(), &mut thread_tx, shared_key).await
+                {
+                    handle_client(
+                        username,
+                        &mut reader,
+                        &mut tx_writer.clone(),
+                        &mut thread_tx,
+                        shared_key
+                    )
+                    .await;
+                }
             }
         });
     }

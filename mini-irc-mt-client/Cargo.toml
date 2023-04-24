@@ -17,3 +17,8 @@ mini-irc-protocol = { version = "0.1.0", path = "../mini-irc-protocol" }
 mini-irc-ui = { version = "0.1.0", path = "../mini-irc-ui" }
 crossterm = { version = "0.22" }
 tui = { version = "0.16", default-features = false, features = ['crossterm'] }
+x25519-dalek = "1.2.0"
+rand_core = { version = "0.5"}
+
+[dev-dependencies]
+rand_core = { version = "0.5", default-features = false, features = ["getrandom"] }
