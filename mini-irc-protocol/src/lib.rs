@@ -102,8 +102,7 @@ pub enum Response {
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum ErrorType {
     Informative(String),
-    DirectMessageReceiverNotInTheServer(String),
-    DirectMessageReceiverLeftTheServer(String)
+    DirectMessageReceiverNotFoundOrLeftTheServer(String),
 }
 
 

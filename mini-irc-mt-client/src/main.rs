@@ -185,13 +185,13 @@ fn main() -> Result<(), Box<dyn Error>> {
                         app.set_notification(msg);                        
                     }
 
-                    Response::Error(ErrorType::DirectMessageReceiverNotInTheServer(receiver_name)) => {
+                    Response::Error(ErrorType::DirectMessageReceiverNotFoundOrLeftTheServer(receiver_name)) => {
 
                         app.remove_tab(format!("@{receiver_name}"));  
 
                         //let now = Local::now();                                                                      
                         //let notif_msg = format!("{}: @{receiver_name} is not found on the server", now.format("%H:%M:%S"));
-                        let notif_msg = format!("@{receiver_name} is not found on the server");
+                        let notif_msg = format!("@{receiver_name} is not found or left the server");
                         app.set_notification(notif_msg);                        
                     }
 

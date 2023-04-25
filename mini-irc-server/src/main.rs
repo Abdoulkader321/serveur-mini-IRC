@@ -133,6 +133,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
             }
 
             Some(AskRessource::AskToJoinChannel(channel_name, username, resp)) => {
+                                        
                 match check_channel_exists(&channels, channel_name.clone()) {
                     Some(index) => {
                         let receiver = channels[index].sender.subscribe(username.clone());
@@ -198,6 +199,11 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         }
                     }
                 }
+
+                // As the user left, we delete his privet channel
+                let index = check_channel_exists(&channels, format!("{username}-privet-channel")).unwrap();
+                channels.swap_remove(index);                        
+
             }
 
             Some(AskRessource::TransferMessageToChannel(username, channel_name, content, resp)) => {
@@ -458,7 +464,7 @@ async fn handle_client(
                             Ok(false) => {
                                 respond_to_client(
                                     writer_tx,
-                                    Response::Error(ErrorType::DirectMessageReceiverNotInTheServer(receiver_name)),
+                                    Response::Error(ErrorType::DirectMessageReceiverNotFoundOrLeftTheServer(receiver_name)),
                                     key,
                                 )
                                 .await;
@@ -502,7 +508,7 @@ async fn handle_client(
                     }
                 }
             }
-            Ok(None) | Err(_) => {
+            Err(_) => {
                 let ressource = AskRessource::UserDisconnected(username.clone());
                 match thread_tx.send(ressource).await {
                     Ok(_) => {
