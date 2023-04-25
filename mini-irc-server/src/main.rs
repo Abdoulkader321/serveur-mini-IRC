@@ -6,12 +6,13 @@ use mini_irc_protocol::AsyncTypedWriter;
 use mini_irc_protocol::BroadcastReceiverWithList;
 use mini_irc_protocol::BroadcastSenderWithList;
 use mini_irc_protocol::ChanOp;
+use mini_irc_protocol::ErrorType;
 use mini_irc_protocol::Key;
 use mini_irc_protocol::MessageReceiver;
 use mini_irc_protocol::Request;
 use mini_irc_protocol::Response;
+use mini_irc_protocol::ResponsePlusKey;
 use rand_core::OsRng;
-use x25519_dalek::SharedSecret;
 use std::error::Error;
 use std::ops::Deref;
 use tokio::net::tcp::OwnedReadHalf;
@@ -20,6 +21,7 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
+use x25519_dalek::SharedSecret;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
 /* todo Suppression du Channel privé d'un client */
@@ -75,7 +77,7 @@ fn check_user_in_channel(
         .position(|name| *name == username)
 }
 
-async fn handle_writer(writer: &mut OwnedWriteHalf, rx: &mut Receiver<(Response, Key)>) {
+async fn handle_writer(writer: &mut OwnedWriteHalf, rx: &mut Receiver<ResponsePlusKey>) {
     let mut typed_writer = AsyncTypedWriter::<_, Response>::new(writer);
 
     while let Some((object_to_send, key)) = rx.recv().await {
@@ -83,9 +85,13 @@ async fn handle_writer(writer: &mut OwnedWriteHalf, rx: &mut Receiver<(Response,
     }
 }
 
-async fn respond_to_client(writer_tx: &mut Sender<(Response, Key)>, object_to_send: Response, key:Key) {
+async fn respond_to_client(
+    writer_tx: &mut Sender<ResponsePlusKey>,
+    object_to_send: Response,
+    key: Key,
+) {
     if writer_tx.send((object_to_send, key)).await.is_err() {
-        println!("!! An error occured !!");
+        println!("!! An error occured !! {}", line!());
     }
 }
 
@@ -98,11 +104,11 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
             Some(AskRessource::JoinServer(username, resp)) => {
                 if connected_clients.iter().any(|s| s == &username) {
                     if let Err(e) = resp.send(false) {
-                        println!("!! An error occured in send: {e} !!");
+                        println!("!! An error occured in send: {e} !! {}", line!());
                     }
                 } else {
                     if let Err(e) = resp.send(true) {
-                        println!("!! An error occured in send: {e} !!");
+                        println!("!! An error occured in send: {e} !! {}", line!());
                     }
                     connected_clients.push(username.clone());
                 }
@@ -120,7 +126,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 };
 
                 if resp.send(receiver).is_err() {
-                    println!("!! An error occured !!");
+                    println!("!! An error occured !! {}", line!());
                 } else {
                     channels.push(new_channel);
                 }
@@ -132,14 +138,14 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         let receiver = channels[index].sender.subscribe(username.clone());
 
                         if resp.send(receiver).is_err() {
-                            println!("!! An error occured !!");
+                            println!("!! An error occured !! {}", line!());
                         }
 
                         // Informer les autres utilisateurs
                         let ressource =
                             BroadcastMessage::NewUserJoin(username.clone(), channel_name);
                         if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!");
+                            println!("!! An error occured !! {}", line!());
                         }
                     }
                     None => {
@@ -157,7 +163,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         channels.push(new_channel);
 
                         if resp.send(receiver).is_err() {
-                            println!("!! An error occured !!");
+                            println!("!! An error occured !! {}", line!());
                         }
                     }
                 }
@@ -184,7 +190,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             true,
                         );
                         if channels[channel_index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n");
+                            println!("!! An error occured !!\n  {}", line!());
                         }
 
                         if channels[channel_index].sender.into_subscribers().is_empty() {
@@ -192,7 +198,6 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         }
                     }
                 }
-               
             }
 
             Some(AskRessource::TransferMessageToChannel(username, channel_name, content, resp)) => {
@@ -207,13 +212,13 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             BroadcastMessage::MessageToChannel(username, channel_name, content);
 
                         if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n");
+                            println!("!! An error occured !!\n  {}", line!());
                         }
                     }
                 }
 
                 if resp.send(found).is_err() {
-                    println!("!! An error occured !!\n");
+                    println!("!! An error occured !!\n {}", line!());
                 }
             }
 
@@ -234,12 +239,12 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     let ressource = BroadcastMessage::DirectMessage(sender_name, message);
 
                     if channels[index].sender.send(ressource).is_err() {
-                        println!("!! An error occured !!\n");
+                        println!("!! An error occured !!\n {}", line!());
                     }
                 }
 
                 if resp.send(found).is_err() {
-                    println!("!! An error occured !!\n");
+                    println!("!! An error occured !!\n {}", line!());
                 }
             }
 
@@ -254,7 +259,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         let ressource = BroadcastMessage::Leave(username, channel_name, false);
 
                         if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n");
+                            println!("!! An error occured !!\n {}", line!());
                         }
 
                         if channels[index].sender.into_subscribers().is_empty() {
@@ -264,11 +269,11 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 }
 
                 if resp.send(found).is_err() {
-                    println!("!! An error occured !!\n");
+                    println!("!! An error occured !!\n {}", line!());
                 }
             }
             _ => {
-                println!("!! An error occured !!");
+                println!("!! An error occured !! {}", line!());
             }
         }
     }
@@ -277,8 +282,8 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 async fn handle_waiting_for_messages(
     username: String,
     broadcast_receiver: &mut BroadcastReceiverWithList<BroadcastMessage, String>,
-    writer_tx: &mut Sender<(Response, Key)>,
-    key: Key
+    writer_tx: &mut Sender<ResponsePlusKey>,
+    key: Key,
 ) {
     let mut finished = false;
     while !finished {
@@ -298,7 +303,8 @@ async fn handle_waiting_for_messages(
                     Response::DirectMessage {
                         from: sender_name,
                         content: message,
-                    },key
+                    },
+                    key,
                 )
                 .await;
             }
@@ -319,7 +325,8 @@ async fn handle_waiting_for_messages(
                         Response::Channel {
                             op: chan_op,
                             chan: channel,
-                        },key
+                        },
+                        key,
                     )
                     .await;
                 }
@@ -338,9 +345,9 @@ async fn handle_waiting_for_messages(
 async fn handle_client(
     username: String,
     reader: &mut OwnedReadHalf,
-    writer_tx: &mut Sender<(Response, Key)>,
+    writer_tx: &mut Sender<ResponsePlusKey>,
     thread_tx: &mut Sender<AskRessource>,
-    key: Key
+    key: Key,
 ) {
     let mut typed_reader = AsyncTypedReader::<_, Request>::new(reader);
 
@@ -360,8 +367,9 @@ async fn handle_client(
                                 writer_tx,
                                 Response::AckJoin {
                                     chan: channel_name.clone(),
-                                    users: broadcast_receiver.into_subscribers()
-                                },key
+                                    users: broadcast_receiver.into_subscribers(),
+                                },
+                                key,
                             )
                             .await;
 
@@ -372,18 +380,19 @@ async fn handle_client(
                                 handle_waiting_for_messages(
                                     copy_username,
                                     &mut broadcast_receiver,
-                                    &mut copy_writer_tx, key
+                                    &mut copy_writer_tx,
+                                    key,
                                 )
                                 .await;
                                 drop(broadcast_receiver);
                             });
                         }
                         Err(e) => {
-                            println!("!! An error occured {e} !!");
+                            println!("!! An error occured {e} !! {}", line!());
                         }
                     },
                     _ => {
-                        println!("!! An error occured !!");
+                        println!("!! An error occured !! {}", line!());
                     }
                 }
             }
@@ -403,10 +412,11 @@ async fn handle_client(
                             Ok(false) => {
                                 respond_to_client(
                                     writer_tx,
-                                    Response::Error(
+                                    Response::Error(ErrorType::Informative(
                                         "You must ask to join to channel OR channel not found"
                                             .to_string(),
-                                    ),key
+                                    )),
+                                    key,
                                 )
                                 .await;
                             }
@@ -418,11 +428,11 @@ async fn handle_client(
                                 );
                             }
                             Err(_) => {
-                                println!("!! An error occured in send !!");
+                                println!("!! An error occured in send !! {}", line!());
                             }
                         },
                         Err(e) => {
-                            println!("!! An error occured in send: {e} !!");
+                            println!("!! An error occured in send: {e} !! {}", line!());
                         }
                     }
                 }
@@ -448,19 +458,18 @@ async fn handle_client(
                             Ok(false) => {
                                 respond_to_client(
                                     writer_tx,
-                                    Response::Error(
-                                        "The receiver is not found on the server".to_string(),
-                                    ),key
+                                    Response::Error(ErrorType::DirectMessageReceiverNotInTheServer(receiver_name)),
+                                    key,
                                 )
                                 .await;
                             }
                             Err(e) => {
-                                println!("!! An error occured in send: {e} !!");
+                                println!("!! An error occured in send: {e} !! {}", line!());
                             }
                         },
 
                         Err(e) => {
-                            println!("!! An error occured in send: {e} !!");
+                            println!("!! An error occured in send: {e} !! {}", line!());
                         }
                     }
                 }
@@ -479,16 +488,17 @@ async fn handle_client(
                         _ => {
                             respond_to_client(
                                 writer_tx,
-                                Response::Error(
+                                Response::Error(ErrorType::Informative(
                                     "You must ask to join to channel OR channel not found"
                                         .to_string(),
-                                ),key
+                                )),
+                                key,
                             )
                             .await;
                         }
                     },
                     Err(_) => {
-                        println!("!! An error occured in send: !!");
+                        println!("!! An error occured in send: !! {}", line!());
                     }
                 }
             }
@@ -499,7 +509,7 @@ async fn handle_client(
                         println!("-- {} left the server -- \n", username);
                     }
                     _ => {
-                        println!("!! An error occured !!");
+                        println!("!! An error occured !! {}", line!());
                     }
                 }
 
@@ -515,7 +525,7 @@ async fn handle_client(
 async fn diffie_hellman_succeeded(
     server_public: &[u8; 32],
     reader: &mut OwnedReadHalf,
-    writer_tx: &mut Sender<(Response, Key)>,
+    writer_tx: &mut Sender<ResponsePlusKey>,
     thread_tx: &mut Sender<AskRessource>,
 ) -> Option<[u8; 32]> {
     let mut typed_reader = AsyncTypedReader::<_, Request>::new(reader);
@@ -530,7 +540,8 @@ async fn diffie_hellman_succeeded(
         Ok(_) => {
             respond_to_client(
                 writer_tx,
-                Response::Error("We must firstly exchange keys".to_string()), None
+                Response::Error(ErrorType::Informative("We must firstly exchange keys".to_string())),
+                None,
             )
             .await;
             None
@@ -541,9 +552,9 @@ async fn diffie_hellman_succeeded(
 
 async fn is_client_accepted(
     reader: &mut OwnedReadHalf,
-    writer_tx: &mut Sender<(Response, Key)>,
+    writer_tx: &mut Sender<ResponsePlusKey>,
     thread_tx: &mut Sender<AskRessource>,
-    key : Key
+    key: Key,
 ) -> Option<String> {
     let mut typed_reader = AsyncTypedReader::<_, Request>::new(reader);
 
@@ -563,7 +574,7 @@ async fn is_client_accepted(
                                 respond_to_client(
                                     writer_tx,
                                     Response::AckConnect(username.clone()),
-                                    key
+                                    key,
                                 )
                                 .await;
 
@@ -582,7 +593,7 @@ async fn is_client_accepted(
                                                     copy_username,
                                                     &mut broadcast_receiver,
                                                     &mut copy_writer_tx,
-                                                    key
+                                                    key,
                                                 )
                                                 .await;
                                                 drop(broadcast_receiver);
@@ -605,34 +616,34 @@ async fn is_client_accepted(
 
                                 respond_to_client(
                                     writer_tx,
-                                    Response::Error(
-                                        "Another user with the same name already exist!"
-                                            .to_string(),
+                                    Response::Error(ErrorType::Informative("Another user with the same name already exist!"
+                                    .to_string()),
                                     ),
-                                    key
+                                    key,
                                 )
                                 .await;
                             }
                         }
                         Err(e) => {
-                            println!("!! An error occured in receiving : {e} !!");
+                            println!("!! An error occured in receiving : {e} !!  {}", line!());
                         }
                     },
                     Err(e) => {
-                        println!("!! An error occured in send: {e} !!");
+                        println!("!! An error occured in send: {e} !! {}", line!());
                     }
                 }
             } else {
                 println!("-- One user do not respect the protocol : quicked out --\n");
                 respond_to_client(
                     writer_tx,
-                    Response::Error("You must respect the protocol".to_string()),key
+                    Response::Error(ErrorType::Informative("You must respect the protocol".to_string()) ),
+                    key,
                 )
                 .await;
             }
         }
         _ => {
-            println!("!! An error occured: !!");
+            println!("!! An error occured: !!, {}", line!());
         }
     }
 
@@ -657,7 +668,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
         let (mut reader, mut writer) = socket.into_split();
 
-        let (tx_writer, mut rx_writer): (Sender<(Response, Key)>, Receiver<(Response, Key)>) = mpsc::channel(100);
+        let (tx_writer, mut rx_writer): (Sender<ResponsePlusKey>, Receiver<ResponsePlusKey>) =
+            mpsc::channel(100);
 
         // Diffie hellman keys
         let server_secret = EphemeralSecret::new(OsRng);
@@ -676,18 +688,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
             )
             .await
             {
-                let shared_key = server_secret.diffie_hellman(&PublicKey::from(client_public)).to_bytes();
-                let shared_key = Some(shared_key);            
+                let shared_key = server_secret
+                    .diffie_hellman(&PublicKey::from(client_public))
+                    .to_bytes();
+                let shared_key = Some(shared_key);
 
-                if let Some(username) =
-                    is_client_accepted(&mut reader, &mut tx_writer.clone(), &mut thread_tx, shared_key).await
+                if let Some(username) = is_client_accepted(
+                    &mut reader,
+                    &mut tx_writer.clone(),
+                    &mut thread_tx,
+                    shared_key,
+                )
+                .await
                 {
                     handle_client(
                         username,
                         &mut reader,
                         &mut tx_writer.clone(),
                         &mut thread_tx,
-                        shared_key
+                        shared_key,
                     )
                     .await;
                 }

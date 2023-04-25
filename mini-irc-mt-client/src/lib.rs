@@ -43,7 +43,9 @@ pub fn handle_user_input(
                 Ok(None)
             } else {
 
-                app.add_tab(tab_name.clone());
+                let users = vec![username.clone(), receiver_name.clone()];
+                app.add_tab_with_users(tab_name.clone(), users);
+
                 app.push_message(format!("{username}(me)"), msg.clone(), tab_name);
                 Ok(Some(Request::Message {
                     to: MessageReceiver::User(receiver_name),

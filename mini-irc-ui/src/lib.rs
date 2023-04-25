@@ -20,6 +20,7 @@ use tui::{
     Frame, Terminal,
 };
 use widgets::Input;
+use chrono::Local;
 
 pub type MyTerminal = Terminal<CrosstermBackend<io::Stdout>>;
 
@@ -323,11 +324,15 @@ impl App {
     }
 
     pub fn push_message(&mut self, from: String, message: String, tab_name: String) {
+        let now = Local::now().format("%H:%M:%S"); 
+
         if let Some(index) = self.state.get_tab_index(&tab_name) {
             // Tab exists for sure here.
             let is_current_tab = self.state.is_current_tab(index);
             let tab = self.state.get_mut_tab_or_insert(tab_name.clone());
-            tab.history.push((from, message));
+            
+            let time_and_from = [format!("{}: ", now), from].concat();
+            tab.history.push((time_and_from, message));
             if tab.offset != 0 || !is_current_tab {
                 tab.has_unread_message = true;
             }
@@ -350,7 +355,10 @@ impl App {
     /// Set a new notification to print.
     /// Might erase an old one.
     pub fn set_notification(&mut self, notif: String) {
-        self.state.notif = Some(notif);
+        let now = Local::now().format("%H:%M:%S"); 
+        let time_and_notif = [format!("{}: ", now), notif].concat();
+
+        self.state.notif = Some(time_and_notif);
     }
 
     /// Clear the current notification.

@@ -1,6 +1,6 @@
 use crossterm::event;
 use mini_irc_mt::handle_user_input;
-use mini_irc_protocol::{ChanOp, Request, Response, TypedReader, TypedWriter, Key};
+use mini_irc_protocol::{ChanOp, Request, Response, TypedReader, TypedWriter, Key, ErrorType};
 use mini_irc_ui::{App, KeyReaction};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 use std::env;
@@ -9,7 +9,8 @@ use std::net::Shutdown;
 use rand_core::OsRng;
 use std::ops::{DerefMut, Deref};
 use std::thread::spawn;
-use std::time::Instant;
+use chrono::Local;
+use std::time::{Instant, SystemTime};
 
 enum Event {
     TerminalEvent(event::Event),
@@ -61,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     match nickname_response {
         Some(Response::AckConnect(_)) => { /* Tout s'est bien passé */ }
-        Some(Response::Error(msg)) => {
+        Some(Response::Error(ErrorType::Informative(msg))) => {
             println!("Message du serveur : {msg}");
             return Ok(());
         }
@@ -180,6 +181,20 @@ fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                     
+                    Response::Error(ErrorType::Informative(msg)) => {
+                        app.set_notification(msg);                        
+                    }
+
+                    Response::Error(ErrorType::DirectMessageReceiverNotInTheServer(receiver_name)) => {
+
+                        app.remove_tab(format!("@{receiver_name}"));  
+
+                        //let now = Local::now();                                                                      
+                        //let notif_msg = format!("{}: @{receiver_name} is not found on the server", now.format("%H:%M:%S"));
+                        let notif_msg = format!("@{receiver_name} is not found on the server");
+                        app.set_notification(notif_msg);                        
+                    }
+
                     _ => {
                         // on, ignore pour l'instant
                         todo!()

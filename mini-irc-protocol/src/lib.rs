@@ -20,6 +20,7 @@ use tokio::sync::broadcast;
 use tracing::info;
 
 pub type Key = Option<[u8; 32]>;
+pub type ResponsePlusKey = (Response, Key);
 
 ///  Une requête mini-irc, c'est-à-dire un message envoyé par le client au serveur.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -95,8 +96,18 @@ pub enum Response {
     /// Ack de connection, réponse indiquant que la demande a pu être correctement traitée.
     AckConnect(String),
     /// Message d'erreur
-    Error(String),
+    Error(ErrorType),
 }
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum ErrorType {
+    Informative(String),
+    DirectMessageReceiverNotInTheServer(String),
+    DirectMessageReceiverLeftTheServer(String)
+}
+
+
+
 /// Canal de communication côté réception, typé et **synchrone**. Permet de recevoir un type quelconque via
 /// une socquette TCP par exemple, dès lors que le type à envoyer implémente [`Serialize`] et [`Deserialize`].
 /// La socquette doit par ailleurs implémenter [`Read`].
