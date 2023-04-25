@@ -29,7 +29,7 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 /* feat: Un utilisateur ne peut pas envoyer de message privé à lui même */
 
 enum AskRessource {
-    JoinServer(String, oneshot::Sender<bool>),
+    JoinServer(String, String, oneshot::Sender<bool>),
     CreatePrivateChannel(
         String,
         oneshot::Sender<BroadcastReceiverWithList<BroadcastMessage, String>>,
@@ -96,13 +96,31 @@ async fn respond_to_client(
 }
 
 async fn server_database(rx: &mut Receiver<AskRessource>) {
-    let mut connected_clients: Vec<String> = Vec::new(); // Database
+    let mut connected_clients: Vec<(String, String)> = Vec::new(); // Database (Name Password)
+    let mut disconnected_clients: Vec<(String, String)> = Vec::new();
+
     let mut channels: Vec<Channel> = Vec::new(); // Database
 
     loop {
         match rx.recv().await {
-            Some(AskRessource::JoinServer(username, resp)) => {
-                if connected_clients.iter().any(|s| s == &username) {
+            Some(AskRessource::JoinServer(username, password, resp)) => {
+                if let Some(index) = disconnected_clients
+                    .iter()
+                    .position(|(name, _)| *name == username)
+                {
+                    let (_, saved_password) = disconnected_clients[index].clone();
+
+                    if (saved_password == password) {
+                        if let Err(e) = resp.send(true) {
+                            println!("!! An error occured in send: {e} !! {}", line!());
+                        }
+
+                        disconnected_clients.remove(index);
+                        connected_clients.push((username.clone(), password));
+                    } else if let Err(e) = resp.send(false) {
+                        println!("!! An error occured in send: {e} !! {}", line!());
+                    }
+                } else if connected_clients.iter().any(|(name, _)| name == &username) {
                     if let Err(e) = resp.send(false) {
                         println!("!! An error occured in send: {e} !! {}", line!());
                     }
@@ -110,7 +128,8 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     if let Err(e) = resp.send(true) {
                         println!("!! An error occured in send: {e} !! {}", line!());
                     }
-                    connected_clients.push(username.clone());
+
+                    connected_clients.push((username.clone(), password));
                 }
             }
 
@@ -133,7 +152,6 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
             }
 
             Some(AskRessource::AskToJoinChannel(channel_name, username, resp)) => {
-                                        
                 match check_channel_exists(&channels, channel_name.clone()) {
                     Some(index) => {
                         let receiver = channels[index].sender.subscribe(username.clone());
@@ -174,9 +192,10 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 /* Remove user for connected clients array */
                 let index = connected_clients
                     .iter()
-                    .position(|name| *name == username)
+                    .position(|(name, _)| *name == username)
                     .unwrap();
 
+                disconnected_clients.push(connected_clients[index].clone());
                 connected_clients.remove(index);
 
                 /* Remove User from channels && remove channel if there is no user*/
@@ -201,9 +220,9 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 }
 
                 // As the user left, we delete his privet channel
-                let index = check_channel_exists(&channels, format!("{username}-privet-channel")).unwrap();
-                channels.swap_remove(index);                        
-
+                let index =
+                    check_channel_exists(&channels, format!("{username}-privet-channel")).unwrap();
+                channels.swap_remove(index);
             }
 
             Some(AskRessource::TransferMessageToChannel(username, channel_name, content, resp)) => {
@@ -403,83 +422,87 @@ async fn handle_client(
                 }
             }
 
-            Ok(Some(Request::Message { to, content })) => match to {
-                MessageReceiver::Channel(channel_name) => {
-                    let (tx, rx) = oneshot::channel();
-                    let ressource = AskRessource::TransferMessageToChannel(
-                        username.clone(),
-                        channel_name.clone(),
-                        content,
-                        tx,
-                    );
+            Ok(Some(Request::Message { to, content })) => {
+                match to {
+                    MessageReceiver::Channel(channel_name) => {
+                        let (tx, rx) = oneshot::channel();
+                        let ressource = AskRessource::TransferMessageToChannel(
+                            username.clone(),
+                            channel_name.clone(),
+                            content,
+                            tx,
+                        );
 
-                    match thread_tx.send(ressource).await {
-                        Ok(_) => match rx.await {
-                            Ok(false) => {
-                                respond_to_client(
-                                    writer_tx,
-                                    Response::Error(ErrorType::Informative(
-                                        "You must ask to join to channel OR channel not found"
-                                            .to_string(),
-                                    )),
-                                    key,
-                                )
-                                .await;
+                        match thread_tx.send(ressource).await {
+                            Ok(_) => match rx.await {
+                                Ok(false) => {
+                                    respond_to_client(
+                                        writer_tx,
+                                        Response::Error(ErrorType::Informative(
+                                            "You must ask to join to channel OR channel not found"
+                                                .to_string(),
+                                        )),
+                                        key,
+                                    )
+                                    .await;
+                                }
+                                Ok(true) => {
+                                    println!(
+                                        "{} sent a message in the channel {} \n",
+                                        username.clone(),
+                                        channel_name
+                                    );
+                                }
+                                Err(_) => {
+                                    println!("!! An error occured in send !! {}", line!());
+                                }
+                            },
+                            Err(e) => {
+                                println!("!! An error occured in send: {e} !! {}", line!());
                             }
-                            Ok(true) => {
-                                println!(
-                                    "{} sent a message in the channel {} \n",
-                                    username.clone(),
-                                    channel_name
-                                );
-                            }
-                            Err(_) => {
-                                println!("!! An error occured in send !! {}", line!());
-                            }
-                        },
-                        Err(e) => {
-                            println!("!! An error occured in send: {e} !! {}", line!());
                         }
                     }
-                }
-                MessageReceiver::User(receiver_name) => {
-                    let (tx, rx) = oneshot::channel();
-                    let ressource = AskRessource::TransferMessageToAClient(
-                        username.clone(),
-                        receiver_name.clone(),
-                        content,
-                        tx,
-                    );
+                    MessageReceiver::User(receiver_name) => {
+                        let (tx, rx) = oneshot::channel();
+                        let ressource = AskRessource::TransferMessageToAClient(
+                            username.clone(),
+                            receiver_name.clone(),
+                            content,
+                            tx,
+                        );
 
-                    match thread_tx.send(ressource).await {
-                        Ok(_) => match rx.await {
-                            Ok(true) => {
-                                println!(
-                                    "{} sent a private message to {} \n",
-                                    username.clone(),
-                                    receiver_name.clone()
-                                );
-                            }
+                        match thread_tx.send(ressource).await {
+                            Ok(_) => {
+                                match rx.await {
+                                    Ok(true) => {
+                                        println!(
+                                            "{} sent a private message to {} \n",
+                                            username.clone(),
+                                            receiver_name.clone()
+                                        );
+                                    }
 
-                            Ok(false) => {
-                                respond_to_client(
+                                    Ok(false) => {
+                                        respond_to_client(
                                     writer_tx,
                                     Response::Error(ErrorType::DirectMessageReceiverNotFoundOrLeftTheServer(receiver_name)),
                                     key,
                                 )
                                 .await;
+                                    }
+                                    Err(e) => {
+                                        println!("!! An error occured in send: {e} !! {}", line!());
+                                    }
+                                }
                             }
+
                             Err(e) => {
                                 println!("!! An error occured in send: {e} !! {}", line!());
                             }
-                        },
-
-                        Err(e) => {
-                            println!("!! An error occured in send: {e} !! {}", line!());
                         }
                     }
                 }
-            },
+            }
             Ok(Some(Request::LeaveChan(channel_name))) => {
                 let (tx, rx) = oneshot::channel();
 
@@ -546,7 +569,9 @@ async fn diffie_hellman_succeeded(
         Ok(_) => {
             respond_to_client(
                 writer_tx,
-                Response::Error(ErrorType::Informative("We must firstly exchange keys".to_string())),
+                Response::Error(ErrorType::Informative(
+                    "We must firstly exchange keys".to_string(),
+                )),
                 None,
             )
             .await;
@@ -566,9 +591,9 @@ async fn is_client_accepted(
 
     match typed_reader.recv(key).await {
         Ok(Some(connection)) => {
-            if let Request::Connect(username) = connection {
+            if let Request::Connect(username, password) = connection {
                 let (tx, rx) = oneshot::channel();
-                let ressource = AskRessource::JoinServer(username.clone(), tx);
+                let ressource = AskRessource::JoinServer(username.clone(), password, tx);
 
                 match thread_tx.send(ressource).await {
                     Ok(_) => match rx.await {
@@ -622,9 +647,10 @@ async fn is_client_accepted(
 
                                 respond_to_client(
                                     writer_tx,
-                                    Response::Error(ErrorType::Informative("Another user with the same name already exist!"
-                                    .to_string()),
-                                    ),
+                                    Response::Error(ErrorType::Informative(
+                                        "Another user with the same name already exist OR you have a connected session! OR your password is invalid"
+                                            .to_string(),
+                                    )),
                                     key,
                                 )
                                 .await;
@@ -642,12 +668,19 @@ async fn is_client_accepted(
                 println!("-- One user do not respect the protocol : quicked out --\n");
                 respond_to_client(
                     writer_tx,
-                    Response::Error(ErrorType::Informative("You must respect the protocol".to_string()) ),
+                    Response::Error(ErrorType::Informative(
+                        "You must respect the protocol".to_string(),
+                    )),
                     key,
                 )
                 .await;
             }
         }
+
+        Ok(None) => {
+            println!("!! An error occured in decryption mode !!, {}", line!());
+        }
+
         _ => {
             println!("!! An error occured: !!, {}", line!());
         }
@@ -698,6 +731,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .diffie_hellman(&PublicKey::from(client_public))
                     .to_bytes();
                 let shared_key = Some(shared_key);
+                //let shared_key = Some([0_u8; 32]);
 
                 if let Some(username) = is_client_accepted(
                     &mut reader,

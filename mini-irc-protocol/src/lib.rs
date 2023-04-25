@@ -27,7 +27,7 @@ pub type ResponsePlusKey = (Response, Key);
 pub enum Request {
     Handshake([u8; 32]),
     /// Demande de connexion avec le nom d'utilisateur fourni.
-    Connect(String),
+    Connect(String, String),
     /// Demande de rejoindre un canal mini-irc donné. S'il n'existe pas encore, le canal est créé.
     JoinChan(String),
     /// Demande de quitter un canal mini-irc donné.

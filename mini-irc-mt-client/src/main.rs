@@ -24,8 +24,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     // Premier argument: l'addresse du serveur
     // Deuxième argument: nickname
-    if args.len() != 3 {
-        println!("Utilisation: ./client adresse-serveur:port nom_utilisateur");
+    if args.len() != 4 {
+        println!("Utilisation: ./client adresse-serveur:port nom_utilisateur mot_de_passe");
         return Ok(());
     }
 
@@ -35,6 +35,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let shared_key: Key;
 
     let nickname = &args[2];
+    let password = &args[3];
     // On se connecte au serveur
     let tcp_stream = std::net::TcpStream::connect(&args[1])?;
 
@@ -54,8 +55,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     }
 
-    // On envoie le nom d'utilisateur, pour vérifier qu'il n'est pas déjà pris.
-    typed_tcp_tx.send(&Request::Connect(nickname.clone()), shared_key)?;
+    // On envoie le nom d'utilisateur et mot de passe pour vérifier qu'il n'est pas déjà pris.
+    typed_tcp_tx.send(&Request::Connect(nickname.clone(), password.clone()), shared_key)?;
 
     // On vérifie la réponse
     let nickname_response = typed_tcp_rx.recv(shared_key)?;
