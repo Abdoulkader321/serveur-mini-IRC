@@ -5,6 +5,7 @@ use mini_irc_protocol::AsyncTypedReader;
 use mini_irc_protocol::AsyncTypedWriter;
 use mini_irc_protocol::BroadcastReceiverWithList;
 use mini_irc_protocol::BroadcastSenderWithList;
+use mini_irc_protocol::Chan;
 use mini_irc_protocol::ChanOp;
 use mini_irc_protocol::ErrorType;
 use mini_irc_protocol::Key;
@@ -43,6 +44,7 @@ enum AskRessource {
     UserDisconnected(String),
     TransferMessageToChannel(String, String, String, oneshot::Sender<bool>),
     TransferMessageToAClient(String, String, String, oneshot::Sender<bool>),
+    NotifClientIsWriting(String, Chan),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -52,11 +54,18 @@ enum BroadcastMessage {
     /// Ack de sortie d'un channel.
     Leave(String, String, bool),
     NewUserJoin(String, String),
+    NotifClientIsWriting(String, Chan)
 }
 
 struct Channel {
     name: String,
     sender: BroadcastSenderWithList<BroadcastMessage, String>,
+}
+
+struct Client {
+    name: String,
+    password: String,
+    is_connected: bool,
 }
 
 fn check_channel_exists(channels: &[Channel], channel_name: String) -> Option<usize> {
@@ -96,32 +105,27 @@ async fn respond_to_client(
 }
 
 async fn server_database(rx: &mut Receiver<AskRessource>) {
-    let mut connected_clients: Vec<(String, String)> = Vec::new(); // Database (Name Password)
-    let mut disconnected_clients: Vec<(String, String)> = Vec::new();
+    let mut clients: Vec<Client> = Vec::new();
 
     let mut channels: Vec<Channel> = Vec::new(); // Database
 
     loop {
         match rx.recv().await {
             Some(AskRessource::JoinServer(username, password, resp)) => {
-                if let Some(index) = disconnected_clients
-                    .iter()
-                    .position(|(name, _)| *name == username)
-                {
-                    let (_, saved_password) = disconnected_clients[index].clone();
+                let index_client = clients.iter().position(|client| client.name == username);
+                if let Some(index) = index_client {
+                    let client = &mut clients[index];
 
-                    if (saved_password == password) {
+                    if client.is_connected {
+                        if let Err(e) = resp.send(false) {
+                            println!("!! An error occured in send: {e} !! {}", line!());
+                        }
+                    } else if client.password == password {
                         if let Err(e) = resp.send(true) {
                             println!("!! An error occured in send: {e} !! {}", line!());
                         }
-
-                        disconnected_clients.remove(index);
-                        connected_clients.push((username.clone(), password));
+                        client.is_connected = true;
                     } else if let Err(e) = resp.send(false) {
-                        println!("!! An error occured in send: {e} !! {}", line!());
-                    }
-                } else if connected_clients.iter().any(|(name, _)| name == &username) {
-                    if let Err(e) = resp.send(false) {
                         println!("!! An error occured in send: {e} !! {}", line!());
                     }
                 } else {
@@ -129,7 +133,12 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         println!("!! An error occured in send: {e} !! {}", line!());
                     }
 
-                    connected_clients.push((username.clone(), password));
+                    let client = Client {
+                        name: username,
+                        password,
+                        is_connected: true,
+                    };
+                    clients.push(client);
                 }
             }
 
@@ -190,13 +199,12 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
             Some(AskRessource::UserDisconnected(username)) => {
                 /* Remove user for connected clients array */
-                let index = connected_clients
+                let index = clients
                     .iter()
-                    .position(|(name, _)| *name == username)
+                    .position(|client| client.name == username)
                     .unwrap();
 
-                disconnected_clients.push(connected_clients[index].clone());
-                connected_clients.remove(index);
+                clients[index].is_connected = false;
 
                 /* Remove User from channels && remove channel if there is no user*/
                 for channel_index in 0..channels.len() {
@@ -273,6 +281,32 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 }
             }
 
+            Some(AskRessource::NotifClientIsWriting(username, channel)) =>{
+
+                match &channel{
+                    Chan::private(interlocutor_name) => {
+                
+                        let ressource = BroadcastMessage::NotifClientIsWriting(username, channel.clone());
+
+                        let index = check_channel_exists(&channels, format!("{interlocutor_name}-privet-channel")).unwrap();
+                        if channels[index].sender.send(ressource).is_err() {
+                            println!("!! An error occured !!\n {}", line!());
+                        }  
+                    }
+
+                    Chan::public(channel_name) => {
+                        let ressource = BroadcastMessage::NotifClientIsWriting(username, channel.clone());
+
+                        let index = check_channel_exists(&channels, channel_name.clone()).unwrap();
+                        if channels[index].sender.send(ressource).is_err() {
+                            println!("!! An error occured !!\n {}", line!());
+                        }   
+                    }
+                }
+
+            }
+
+
             Some(AskRessource::AskToLeaveChannel(username, channel_name, resp)) => {
                 let mut found = false;
                 let channel_index = check_channel_exists(&channels, channel_name.clone());
@@ -332,6 +366,19 @@ async fn handle_waiting_for_messages(
                     key,
                 )
                 .await;
+            }
+
+            Ok(BroadcastMessage::NotifClientIsWriting(user_name, chan)) => {
+
+                if user_name != username {
+                    respond_to_client(
+                        writer_tx,
+                        Response::NotifClientIsWriting(user_name, chan) ,
+                        key,
+                    )
+                    .await;
+                }
+
             }
 
             Ok(BroadcastMessage::Leave(user_name, channel, suddenly_interrupt)) => {
@@ -531,6 +578,22 @@ async fn handle_client(
                     }
                 }
             }
+
+            Ok(Some(Request::NotifClientIsWriting(username, channel))) => {
+
+                let ressource =
+                    AskRessource::NotifClientIsWriting(username.clone(), channel.clone());
+
+                match thread_tx.send(ressource).await {
+                    Ok(_) => {
+
+                    },
+                    Err(_) => {
+                        println!("!! An error occured in send: !! {}", line!());
+                    }
+                }
+            }
+
             Err(_) => {
                 let ressource = AskRessource::UserDisconnected(username.clone());
                 match thread_tx.send(ressource).await {
@@ -731,7 +794,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .diffie_hellman(&PublicKey::from(client_public))
                     .to_bytes();
                 let shared_key = Some(shared_key);
-                //let shared_key = Some([0_u8; 32]);
 
                 if let Some(username) = is_client_accepted(
                     &mut reader,

@@ -37,6 +37,13 @@ pub enum Request {
         to: MessageReceiver,
         content: String,
     },
+    NotifClientIsWriting(String, Chan)
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
+pub enum Chan {
+    private(String),
+    public(String)
 }
 
 /// La destinataire d'un message
@@ -91,6 +98,8 @@ pub enum Response {
         chan: String,
         users: Vec<String>,
     },
+    NotifClientIsWriting(String, Chan),
+    
     /// Ack de sortie d'un channel.
     AckLeave(String),
     /// Ack de connection, réponse indiquant que la demande a pu être correctement traitée.

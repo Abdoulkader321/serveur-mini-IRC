@@ -8,7 +8,7 @@ use crossterm::{
 };
 use std::{
     collections::BTreeSet,
-    io::{self, Stdout},
+    io::{self, Stdout}, ops::Deref,
 };
 use tui::{
     backend::{Backend, CrosstermBackend},
@@ -172,6 +172,7 @@ pub fn stop_ui(terminal: &mut MyTerminal) -> io::Result<()> {
 
 pub enum KeyReaction {
     UserInput(String),
+    UserWriting,
     Quit,
 }
 
@@ -237,6 +238,8 @@ impl App {
 
             InputMode::Editing => {
                 if let Event::Key(key) = event {
+                    let mut is_writing_msg = false; 
+
                     match key.code {
                         KeyCode::Enter => {
                             let s = tab.input.submit();
@@ -247,6 +250,10 @@ impl App {
                         KeyCode::Char(c) => {
                             //Find the first character for which the cumulated width is larger than current offset
                             tab.input.insert_at_cursor(c);
+
+                            if !tab.input.text.starts_with('/'){
+                                is_writing_msg = true;
+                            }
                         }
                         KeyCode::Backspace => {
                             tab.input.delete_behind_cursor();
@@ -266,7 +273,15 @@ impl App {
                         }
                         _ => {}
                     }
+
+                    if(is_writing_msg){
+                        return Some(KeyReaction::UserWriting);
+                    }
+
                 }
+
+
+                
             }
         }
 

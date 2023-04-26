@@ -1,16 +1,18 @@
+use chrono::Local;
 use crossterm::event;
 use mini_irc_mt::handle_user_input;
-use mini_irc_protocol::{ChanOp, Request, Response, TypedReader, TypedWriter, Key, ErrorType};
+use mini_irc_protocol::{
+    Chan, ChanOp, ErrorType, Key, Request, Response, TypedReader, TypedWriter,
+};
 use mini_irc_ui::{App, KeyReaction};
-use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
+use rand_core::OsRng;
 use std::env;
 use std::error::Error;
 use std::net::Shutdown;
-use rand_core::OsRng;
-use std::ops::{DerefMut, Deref};
+use std::ops::{Deref, DerefMut};
 use std::thread::spawn;
-use chrono::Local;
 use std::time::{Instant, SystemTime};
+use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
 
 enum Event {
     TerminalEvent(event::Event),
@@ -39,7 +41,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // On se connecte au serveur
     let tcp_stream = std::net::TcpStream::connect(&args[1])?;
 
-    
     let mut typed_tcp_tx = TypedWriter::new(tcp_stream.try_clone()?);
     let mut typed_tcp_rx = TypedReader::new(tcp_stream.try_clone()?);
 
@@ -48,15 +49,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     let diffie_hellman_response = typed_tcp_rx.recv(None)?;
 
     if let Some(Response::Handshake(server_public)) = diffie_hellman_response {
-        shared_key = Some(client_secret.diffie_hellman(&PublicKey::from(server_public)).to_bytes())
-
-    }else{
+        shared_key = Some(
+            client_secret
+                .diffie_hellman(&PublicKey::from(server_public))
+                .to_bytes(),
+        )
+    } else {
         return Ok(());
-
     }
 
     // On envoie le nom d'utilisateur et mot de passe pour vérifier qu'il n'est pas déjà pris.
-    typed_tcp_tx.send(&Request::Connect(nickname.clone(), password.clone()), shared_key)?;
+    typed_tcp_tx.send(
+        &Request::Connect(nickname.clone(), password.clone()),
+        shared_key,
+    )?;
 
     // On vérifie la réponse
     let nickname_response = typed_tcp_rx.recv(shared_key)?;
@@ -153,6 +159,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                             }
                         };
                     }
+                    Some(KeyReaction::UserWriting) => {
+                        let chan = if app.get_current_tab().starts_with('#') {
+                            Chan::public(app.get_current_tab()[1..].to_owned())
+                        } else {
+                            Chan::private(app.get_current_tab()[1..].to_owned())
+                        };
+
+                        let request = Request::NotifClientIsWriting(nickname.clone(), chan);
+                        let _ = ui_output_tx.send(request);
+                    }
+
                     None => {} // Géré en interne
                 }
             }
@@ -161,6 +178,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Response::DirectMessage { from, content } => {
                         let user_tab = format!("@{from}");
                         let users = vec![nickname.clone(), from.clone()];
+
+                        app.clear_notif();
                         app.add_tab_with_users(user_tab.clone(), users);
                         app.push_message(from, content, user_tab.clone());
                     }
@@ -175,25 +194,41 @@ fn main() -> Result<(), Box<dyn Error>> {
                         let chan = format!("#{chan}");
                         match op {
                             ChanOp::Message { from, content } => {
+                                app.clear_notif();
                                 app.push_message(from, content, chan)
                             }
                             ChanOp::UserAdd(nickname) => app.add_user(nickname, chan),
                             ChanOp::UserDel(nickname) => app.remove_user(&nickname, chan),
                         }
                     }
-                    
-                    Response::Error(ErrorType::Informative(msg)) => {
-                        app.set_notification(msg);                        
+
+                    Response::NotifClientIsWriting(username, chan) => {
+                        let tab_name = match chan {
+                            Chan::private(_) => {
+                                format!("@{}", username)
+                            }
+                            Chan::public(channel_name) => {
+                                format!("#{}", channel_name)
+                            }
+                        };
+
+                        app.set_notification(format!(
+                            "{} is writing in {} ...",
+                            username,
+                            tab_name
+                        ));
                     }
 
-                    Response::Error(ErrorType::DirectMessageReceiverNotFoundOrLeftTheServer(receiver_name)) => {
+                    Response::Error(ErrorType::Informative(msg)) => {
+                        app.set_notification(msg);
+                    }
 
-                        app.remove_tab(format!("@{receiver_name}"));  
-
-                        //let now = Local::now();                                                                      
-                        //let notif_msg = format!("{}: @{receiver_name} is not found on the server", now.format("%H:%M:%S"));
+                    Response::Error(ErrorType::DirectMessageReceiverNotFoundOrLeftTheServer(
+                        receiver_name,
+                    )) => {
+                        app.remove_tab(format!("@{receiver_name}"));
                         let notif_msg = format!("@{receiver_name} is not found or left the server");
-                        app.set_notification(notif_msg);                        
+                        app.set_notification(notif_msg);
                     }
 
                     _ => {

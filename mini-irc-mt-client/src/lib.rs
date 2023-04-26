@@ -24,7 +24,8 @@ pub fn handle_user_input(
                 match s.parse() {
                     Ok(MessageReceiver::Channel(chan)) => Ok(Some(Request::LeaveChan(chan))),
                     Ok(MessageReceiver::User(_)) => {
-                        todo!("What does it mean to leave DM from one user?")
+                        app.set_notification("What does it mean to leave DM from one user?".to_string());
+                        Ok(None)
                     }
                     Err(e) => Err(e),
                 }
@@ -40,6 +41,7 @@ pub fn handle_user_input(
 
             if (receiver_name == username) {
                 // Un utilisateur ne peut pas envoyer de message privé à lui même
+                app.set_notification("You can't send a message to yourself!".to_string());
                 Ok(None)
             } else {
 
