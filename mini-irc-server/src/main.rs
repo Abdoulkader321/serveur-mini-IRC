@@ -1,6 +1,7 @@
 // cargo add --path ../mini-irc-protocol
 // cargo clippy
 
+use chrono::DateTime;
 use mini_irc_protocol::AsyncTypedReader;
 use mini_irc_protocol::AsyncTypedWriter;
 use mini_irc_protocol::BroadcastReceiverWithList;
@@ -24,6 +25,8 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use x25519_dalek::SharedSecret;
 use x25519_dalek::{EphemeralSecret, PublicKey};
+
+use chrono::Local;
 
 /* todo Suppression du Channel privé d'un client */
 
@@ -65,7 +68,7 @@ struct Channel {
 struct Client {
     name: String,
     password: String,
-    is_connected: bool,
+    is_connected: bool,  
 }
 
 fn check_channel_exists(channels: &[Channel], channel_name: String) -> Option<usize> {
@@ -114,6 +117,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
             Some(AskRessource::JoinServer(username, password, resp)) => {
                 let index_client = clients.iter().position(|client| client.name == username);
                 if let Some(index) = index_client {
+
                     let client = &mut clients[index];
 
                     if client.is_connected {
@@ -125,9 +129,13 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             println!("!! An error occured in send: {e} !! {}", line!());
                         }
                         client.is_connected = true;
-                    } else if let Err(e) = resp.send(false) {
-                        println!("!! An error occured in send: {e} !! {}", line!());
-                    }
+                    } else{
+                        let a :bool;
+
+                        if let Err(e) = resp.send(false) {
+                            println!("!! An error occured in send: {e} !! {}", line!());
+                        }
+                    } 
                 } else {
                     if let Err(e) = resp.send(true) {
                         println!("!! An error occured in send: {e} !! {}", line!());
@@ -136,7 +144,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     let client = Client {
                         name: username,
                         password,
-                        is_connected: true,
+                        is_connected: true
                     };
                     clients.push(client);
                 }

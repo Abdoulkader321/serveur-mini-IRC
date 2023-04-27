@@ -13,6 +13,7 @@ use std::ops::{Deref, DerefMut};
 use std::thread::spawn;
 use std::time::{Instant, SystemTime};
 use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
+extern crate timer;
 
 enum Event {
     TerminalEvent(event::Event),
@@ -130,10 +131,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Toute la partie IO est maintenant gérée. Il suffit de gérer maintenant les
     // requêtes de sources différentes (à faire)
 
+    let timer = timer::Timer::new();
+    
+
     loop {
         // Etape 3: on dessine l'application (à faire après chaque évènement lu,
         // y compris des changements de taille de la fenêtre !)
         app.draw()?;
+
+
         let msg = ui_input_rx.recv()?;
         match msg {
             Event::TerminalEvent(e) => {
@@ -203,6 +209,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
 
                     Response::NotifClientIsWriting(username, chan) => {
+                        app.clear_notif();
                         let tab_name = match chan {
                             Chan::private(_) => {
                                 format!("@{}", username)
@@ -213,10 +220,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                         };
 
                         app.set_notification(format!(
-                            "{} is writing in {} ...",
+                            "{} est entrain d'ecrire dans {} ...",
                             username,
                             tab_name
                         ));
+
+                      
                     }
 
                     Response::Error(ErrorType::Informative(msg)) => {
