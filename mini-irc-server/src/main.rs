@@ -1,9 +1,6 @@
 // cargo add --path ../mini-irc-protocol
 // cargo clippy
 
-use chrono::DateTime;
-use mini_irc_protocol::decrypt;
-use mini_irc_protocol::encrypt;
 use mini_irc_protocol::AsyncTypedReader;
 use mini_irc_protocol::AsyncTypedWriter;
 use mini_irc_protocol::BroadcastReceiverWithList;
@@ -18,8 +15,6 @@ use mini_irc_protocol::Response;
 use mini_irc_protocol::ResponsePlusKey;
 use rand_core::OsRng;
 use std::error::Error;
-use std::ops::Add;
-use std::ops::Deref;
 use std::str::FromStr;
 use tokio::fs::File;
 use tokio::fs::OpenOptions;
@@ -32,15 +27,12 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
-use x25519_dalek::SharedSecret;
 use x25519_dalek::{EphemeralSecret, PublicKey};
-
-use chrono::Local;
 
 /* todo  */
 
 /* feat: + Un utilisateur est entrain d'ecrire dans tel channel,
-
++ Données dans un fichier
 + tous les cas sont bien gere normalement */
 
 enum AskRessource {
@@ -184,12 +176,8 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             println!("!! An error occured in send: {e} !! {}", line!());
                         }
                         client.is_connected = true;
-                    } else {
-                        let a: bool;
-
-                        if let Err(e) = resp.send(false) {
-                            println!("!! An error occured in send: {e} !! {}", line!());
-                        }
+                    } else if let Err(e) = resp.send(false) {
+                        println!("!! An error occured in send: {e} !! {}", line!());
                     }
                 } else {
                     if let Err(e) = resp.send(true) {
@@ -349,7 +337,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
             }
 
             Some(AskRessource::NotifClientIsWriting(username, channel)) => match &channel {
-                Chan::private(interlocutor_name) => {
+                Chan::Private(interlocutor_name) => {
                     let ressource =
                         BroadcastMessage::NotifClientIsWriting(username, channel.clone());
 
@@ -363,7 +351,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     }
                 }
 
-                Chan::public(channel_name) => {
+                Chan::Public(channel_name) => {
                     let ressource =
                         BroadcastMessage::NotifClientIsWriting(username, channel.clone());
 
@@ -680,7 +668,6 @@ async fn diffie_hellman_succeeded(
     server_public: &[u8; 32],
     reader: &mut OwnedReadHalf,
     writer_tx: &mut Sender<ResponsePlusKey>,
-    thread_tx: &mut Sender<AskRessource>,
 ) -> Option<[u8; 32]> {
     let mut typed_reader = AsyncTypedReader::<_, Request>::new(reader);
 
@@ -847,8 +834,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Some(client_public) = diffie_hellman_succeeded(
                 server_public.as_bytes(),
                 &mut reader,
-                &mut tx_writer.clone(),
-                &mut thread_tx,
+                &mut tx_writer.clone(),                
             )
             .await
             {

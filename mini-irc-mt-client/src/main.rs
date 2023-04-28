@@ -1,4 +1,3 @@
-use chrono::Local;
 use crossterm::event;
 use mini_irc_mt::handle_user_input;
 use mini_irc_protocol::{
@@ -9,10 +8,9 @@ use rand_core::OsRng;
 use std::env;
 use std::error::Error;
 use std::net::Shutdown;
-use std::ops::{Deref, DerefMut};
 use std::thread::spawn;
-use std::time::{Instant, SystemTime};
-use x25519_dalek::{EphemeralSecret, PublicKey, SharedSecret};
+use std::time::{Instant};
+use x25519_dalek::{EphemeralSecret, PublicKey};
 extern crate timer;
 
 enum Event {
@@ -131,9 +129,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Toute la partie IO est maintenant gérée. Il suffit de gérer maintenant les
     // requêtes de sources différentes (à faire)
 
-    let timer = timer::Timer::new();
-    
-
     loop {
         // Etape 3: on dessine l'application (à faire après chaque évènement lu,
         // y compris des changements de taille de la fenêtre !)
@@ -167,9 +162,9 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
                     Some(KeyReaction::UserWriting) => {
                         let chan = if app.get_current_tab().starts_with('#') {
-                            Chan::public(app.get_current_tab()[1..].to_owned())
+                            Chan::Public(app.get_current_tab()[1..].to_owned())
                         } else {
-                            Chan::private(app.get_current_tab()[1..].to_owned())
+                            Chan::Private(app.get_current_tab()[1..].to_owned())
                         };
 
                         let request = Request::NotifClientIsWriting(nickname.clone(), chan);
@@ -211,10 +206,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                     Response::NotifClientIsWriting(username, chan) => {
                         app.clear_notif();
                         let tab_name = match chan {
-                            Chan::private(_) => {
+                            Chan::Private(_) => {
                                 format!("@{}", username)
                             }
-                            Chan::public(channel_name) => {
+                            Chan::Public(channel_name) => {
                                 format!("#{}", channel_name)
                             }
                         };

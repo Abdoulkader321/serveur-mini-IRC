@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     let current_tab = app.get_current_tab();
                     app.push_message("test".to_string(), s, current_tab);
                 }
-                None => {} // Rien à faire, géré en interne
+                _ => {} // Rien à faire, géré en interne
             }
         }
     }

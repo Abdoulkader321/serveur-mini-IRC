@@ -39,7 +39,7 @@ pub fn handle_user_input(
             let msg = res[2].to_string();
             let tab_name = format!("@{receiver_name}");
 
-            if (receiver_name == username) {
+            if receiver_name == username {
                 // Un utilisateur ne peut pas envoyer de message privé à lui même
                 app.set_notification("You can't send a message to yourself!".to_string());
                 Ok(None)

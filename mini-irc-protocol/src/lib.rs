@@ -3,10 +3,10 @@
 //! ou asynchrones (uniquement via [tokio]) sont supportés.
 
 use aes_gcm::{
-    aead::{Aead, KeyInit, OsRng},
-    Aes256Gcm, Nonce,
+    aead::{Aead, KeyInit},
+    Aes256Gcm,
 };
-use anyhow::Error;
+
 use rand::Rng;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -42,8 +42,8 @@ pub enum Request {
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
 pub enum Chan {
-    private(String),
-    public(String)
+    Private(String),
+    Public(String)
 }
 
 /// La destinataire d'un message
@@ -188,7 +188,7 @@ where
                     // Deserialize the value, discard the potential deserializing error
                     return Ok(bincode::deserialize(&plaintext).ok());
                 }
-                Err(e) => {
+                Err(_) => {
                     info!("Data received but malformed");
                     return Ok(None);
                 }
@@ -336,7 +336,7 @@ where
                     return Ok(bincode::deserialize(&plaintext).ok());
                 }
 
-                Err(e) => {
+                Err(_) => {
                     info!("Received invalid data");
                     return Ok(None);
                 }
