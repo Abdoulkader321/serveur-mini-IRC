@@ -2,6 +2,8 @@
 // cargo clippy
 
 use chrono::DateTime;
+use mini_irc_protocol::decrypt;
+use mini_irc_protocol::encrypt;
 use mini_irc_protocol::AsyncTypedReader;
 use mini_irc_protocol::AsyncTypedWriter;
 use mini_irc_protocol::BroadcastReceiverWithList;
@@ -16,7 +18,14 @@ use mini_irc_protocol::Response;
 use mini_irc_protocol::ResponsePlusKey;
 use rand_core::OsRng;
 use std::error::Error;
+use std::ops::Add;
 use std::ops::Deref;
+use std::str::FromStr;
+use tokio::fs::File;
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::net::TcpListener;
@@ -28,9 +37,11 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 
 use chrono::Local;
 
-/* todo Suppression du Channel privé d'un client */
+/* todo  */
 
-/* feat: Un utilisateur ne peut pas envoyer de message privé à lui même */
+/* feat: + Un utilisateur est entrain d'ecrire dans tel channel,
+
++ tous les cas sont bien gere normalement */
 
 enum AskRessource {
     JoinServer(String, String, oneshot::Sender<bool>),
@@ -57,7 +68,7 @@ enum BroadcastMessage {
     /// Ack de sortie d'un channel.
     Leave(String, String, bool),
     NewUserJoin(String, String),
-    NotifClientIsWriting(String, Chan)
+    NotifClientIsWriting(String, Chan),
 }
 
 struct Channel {
@@ -68,7 +79,7 @@ struct Channel {
 struct Client {
     name: String,
     password: String,
-    is_connected: bool,  
+    is_connected: bool,
 }
 
 fn check_channel_exists(channels: &[Channel], channel_name: String) -> Option<usize> {
@@ -97,6 +108,49 @@ async fn handle_writer(writer: &mut OwnedWriteHalf, rx: &mut Receiver<ResponsePl
     }
 }
 
+async fn read_client_database(filepath: &str) -> Result<Vec<Client>, Box<dyn std::error::Error>> {
+    let file = File::open(filepath).await?;
+    let reader = BufReader::new(file);
+    let mut clients: Vec<Client> = Vec::new();
+
+    let mut lines = reader.lines();
+    while let Some(line) = lines.next_line().await? {
+
+        let client_info: Vec<&str> = line.split(' ').collect();
+
+        clients.push(Client {
+            name: client_info[0].to_string(),
+            password: client_info[1].to_string(),
+            is_connected: false,
+        });
+    }
+
+    Ok(clients)
+}
+
+async fn write_client_to_database(
+    filepath: &str,
+    clients: &[Client],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut file = OpenOptions::new().write(true).open(filepath).await?;
+    let mut data = String::new();
+
+    for client in clients.iter() {
+        let client_info = vec![
+            String::from_str(&client.name).unwrap(),
+            String::from_str(&client.password).unwrap(),
+        ]
+        .join(" ");
+
+        data.push_str(&client_info);
+        data += "\n";
+    }
+
+    file.write_all(data.as_bytes()).await?;
+
+    Ok(())
+}
+
 async fn respond_to_client(
     writer_tx: &mut Sender<ResponsePlusKey>,
     object_to_send: Response,
@@ -108,16 +162,17 @@ async fn respond_to_client(
 }
 
 async fn server_database(rx: &mut Receiver<AskRessource>) {
-    let mut clients: Vec<Client> = Vec::new();
+
+    let mut clients: Vec<Client> = read_client_database("./client_database.txt").await.unwrap(); // Database of clients (connected and not connected)
 
     let mut channels: Vec<Channel> = Vec::new(); // Database
+   
 
     loop {
         match rx.recv().await {
             Some(AskRessource::JoinServer(username, password, resp)) => {
                 let index_client = clients.iter().position(|client| client.name == username);
                 if let Some(index) = index_client {
-
                     let client = &mut clients[index];
 
                     if client.is_connected {
@@ -129,13 +184,13 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             println!("!! An error occured in send: {e} !! {}", line!());
                         }
                         client.is_connected = true;
-                    } else{
-                        let a :bool;
+                    } else {
+                        let a: bool;
 
                         if let Err(e) = resp.send(false) {
                             println!("!! An error occured in send: {e} !! {}", line!());
                         }
-                    } 
+                    }
                 } else {
                     if let Err(e) = resp.send(true) {
                         println!("!! An error occured in send: {e} !! {}", line!());
@@ -144,10 +199,14 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     let client = Client {
                         name: username,
                         password,
-                        is_connected: true
+                        is_connected: true,
                     };
                     clients.push(client);
                 }
+
+                write_client_to_database("./client_database.txt", &clients)
+                    .await
+                    .unwrap();
             }
 
             Some(AskRessource::CreatePrivateChannel(username, resp)) => {
@@ -289,31 +348,31 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 }
             }
 
-            Some(AskRessource::NotifClientIsWriting(username, channel)) =>{
+            Some(AskRessource::NotifClientIsWriting(username, channel)) => match &channel {
+                Chan::private(interlocutor_name) => {
+                    let ressource =
+                        BroadcastMessage::NotifClientIsWriting(username, channel.clone());
 
-                match &channel{
-                    Chan::private(interlocutor_name) => {
-                
-                        let ressource = BroadcastMessage::NotifClientIsWriting(username, channel.clone());
-
-                        let index = check_channel_exists(&channels, format!("{interlocutor_name}-privet-channel")).unwrap();
-                        if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n {}", line!());
-                        }  
-                    }
-
-                    Chan::public(channel_name) => {
-                        let ressource = BroadcastMessage::NotifClientIsWriting(username, channel.clone());
-
-                        let index = check_channel_exists(&channels, channel_name.clone()).unwrap();
-                        if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n {}", line!());
-                        }   
+                    let index = check_channel_exists(
+                        &channels,
+                        format!("{interlocutor_name}-privet-channel"),
+                    )
+                    .unwrap();
+                    if channels[index].sender.send(ressource).is_err() {
+                        println!("!! An error occured !!\n {}", line!());
                     }
                 }
 
-            }
+                Chan::public(channel_name) => {
+                    let ressource =
+                        BroadcastMessage::NotifClientIsWriting(username, channel.clone());
 
+                    let index = check_channel_exists(&channels, channel_name.clone()).unwrap();
+                    if channels[index].sender.send(ressource).is_err() {
+                        println!("!! An error occured !!\n {}", line!());
+                    }
+                }
+            },
 
             Some(AskRessource::AskToLeaveChannel(username, channel_name, resp)) => {
                 let mut found = false;
@@ -377,16 +436,14 @@ async fn handle_waiting_for_messages(
             }
 
             Ok(BroadcastMessage::NotifClientIsWriting(user_name, chan)) => {
-
                 if user_name != username {
                     respond_to_client(
                         writer_tx,
-                        Response::NotifClientIsWriting(user_name, chan) ,
+                        Response::NotifClientIsWriting(user_name, chan),
                         key,
                     )
                     .await;
                 }
-
             }
 
             Ok(BroadcastMessage::Leave(user_name, channel, suddenly_interrupt)) => {
@@ -588,14 +645,11 @@ async fn handle_client(
             }
 
             Ok(Some(Request::NotifClientIsWriting(username, channel))) => {
-
                 let ressource =
                     AskRessource::NotifClientIsWriting(username.clone(), channel.clone());
 
                 match thread_tx.send(ressource).await {
-                    Ok(_) => {
-
-                    },
+                    Ok(_) => {}
                     Err(_) => {
                         println!("!! An error occured in send: !! {}", line!());
                     }

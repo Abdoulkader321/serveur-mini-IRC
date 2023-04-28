@@ -545,7 +545,7 @@ where
     }
 }
 
-fn encrypt(data_to_encrypt: &[u8], key: &[u8]) -> Vec<u8> {
+pub fn encrypt(data_to_encrypt: &[u8], key: &[u8]) -> Vec<u8> {
     let cipher = Aes256Gcm::new_from_slice(key).unwrap();
 
     let mut random_slice = [0_u8; 12];
@@ -557,7 +557,7 @@ fn encrypt(data_to_encrypt: &[u8], key: &[u8]) -> Vec<u8> {
     [nonce.to_vec(), ciphertext].concat()
 }
 
-fn decrypt(data_to_decrypt: &[u8], key: &[u8]) -> Result<Vec<u8>, aes_gcm::Error> {
+pub fn decrypt(data_to_decrypt: &[u8], key: &[u8]) -> Result<Vec<u8>, aes_gcm::Error> {
     let cipher = Aes256Gcm::new((key).into());
 
     //let plaintext = cipher.decrypt(data_to_decrypt[..12].into(), data_to_decrypt[12..].as_ref()).unwrap();
