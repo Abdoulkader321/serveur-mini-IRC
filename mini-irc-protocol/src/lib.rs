@@ -25,6 +25,7 @@ pub type ResponsePlusKey = (Response, Key);
 ///  Une requête mini-irc, c'est-à-dire un message envoyé par le client au serveur.
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub enum Request {
+    /// Demande d'echange diffie hellman en envoyant ses informations.
     Handshake([u8; 32]),
     /// Demande de connexion avec le nom d'utilisateur fourni.
     Connect(String, String),
@@ -37,12 +38,16 @@ pub enum Request {
         to: MessageReceiver,
         content: String,
     },
+    /// Notifier le serveur qu'un utilisateur donné est entrain d'ecrire dans un canal donné
     NotifClientIsWriting(String, Chan)
 }
 
+/// Le type de canal
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone, Eq)]
 pub enum Chan {
+    /// Canal dans lequel deux utilisateurs communiquent en privé
     Private(String),
+    /// Canal public
     Public(String)
 }
 

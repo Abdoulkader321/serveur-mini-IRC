@@ -9,7 +9,7 @@ use std::env;
 use std::error::Error;
 use std::net::Shutdown;
 use std::thread::spawn;
-use std::time::{Instant};
+use std::time::Instant;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 extern crate timer;
 
@@ -134,7 +134,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         // y compris des changements de taille de la fenêtre !)
         app.draw()?;
 
-
         let msg = ui_input_rx.recv()?;
         match msg {
             Event::TerminalEvent(e) => {
@@ -199,7 +198,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                                 app.push_message(from, content, chan)
                             }
                             ChanOp::UserAdd(nickname) => app.add_user(nickname, chan),
-                            ChanOp::UserDel(nickname) => app.remove_user(&nickname, chan),
+                            ChanOp::UserDel(nickname) => {
+                                app.remove_user(&nickname, chan);
+
+                                let chan = format!("@{nickname}");
+                                app.remove_user(&nickname, chan);
+                            }
                         }
                     }
 
@@ -216,11 +220,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
                         app.set_notification(format!(
                             "{} est entrain d'ecrire dans {} ...",
-                            username,
-                            tab_name
+                            username, tab_name
                         ));
-
-                      
                     }
 
                     Response::Error(ErrorType::Informative(msg)) => {

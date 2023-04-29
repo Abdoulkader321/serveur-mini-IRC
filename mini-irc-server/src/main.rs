@@ -35,6 +35,7 @@ use x25519_dalek::{EphemeralSecret, PublicKey};
 + Données dans un fichier
 + tous les cas sont bien gere normalement */
 
+/// Requête envoyé à la base de données du serveur
 enum AskRessource {
     JoinServer(String, String, oneshot::Sender<bool>),
     CreatePrivateChannel(
@@ -107,7 +108,6 @@ async fn read_client_database(filepath: &str) -> Result<Vec<Client>, Box<dyn std
 
     let mut lines = reader.lines();
     while let Some(line) = lines.next_line().await? {
-
         let client_info: Vec<&str> = line.split(' ').collect();
 
         clients.push(Client {
@@ -154,11 +154,9 @@ async fn respond_to_client(
 }
 
 async fn server_database(rx: &mut Receiver<AskRessource>) {
-
     let mut clients: Vec<Client> = read_client_database("./client_database.txt").await.unwrap(); // Database of clients (connected and not connected)
 
     let mut channels: Vec<Channel> = Vec::new(); // Database
-   
 
     loop {
         match rx.recv().await {
@@ -253,7 +251,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
             }
 
             Some(AskRessource::UserDisconnected(username)) => {
-                /* Remove user for connected clients array */
+                /* Remove user from connected clients array */
                 let index = clients
                     .iter()
                     .position(|client| client.name == username)
@@ -261,9 +259,11 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                 clients[index].is_connected = false;
 
+
+                let private_channel_name = format!("{username}-privet-channel");
+
                 /* Remove User from channels && remove channel if there is no user*/
                 for channel_index in 0..channels.len() {
-                    let private_channel_name = format!("{username}-privet-channel");
                     if check_user_in_channel(&channels, channel_index, username.clone()).is_some()
                         || channels[channel_index].name == private_channel_name
                     {
@@ -341,14 +341,18 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     let ressource =
                         BroadcastMessage::NotifClientIsWriting(username, channel.clone());
 
-                    let index = check_channel_exists(
+                    let index_option = check_channel_exists(
                         &channels,
                         format!("{interlocutor_name}-privet-channel"),
-                    )
-                    .unwrap();
-                    if channels[index].sender.send(ressource).is_err() {
-                        println!("!! An error occured !!\n {}", line!());
-                    }
+                    );
+                    
+                    if let Some(index) = index_option{
+
+                        if channels[index].sender.send(ressource).is_err() {
+                            println!("!! An error occured !!\n {}", line!());
+                        }
+
+                    } 
                 }
 
                 Chan::Public(channel_name) => {
@@ -760,7 +764,7 @@ async fn is_client_accepted(
                                 respond_to_client(
                                     writer_tx,
                                     Response::Error(ErrorType::Informative(
-                                        "Another user with the same name already exist OR you have a connected session! OR your password is invalid"
+                                        "Another user with the same name already exist OR you have a connected session OR your password is wrong!"
                                             .to_string(),
                                     )),
                                     key,
@@ -834,7 +838,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             if let Some(client_public) = diffie_hellman_succeeded(
                 server_public.as_bytes(),
                 &mut reader,
-                &mut tx_writer.clone(),                
+                &mut tx_writer.clone(),
             )
             .await
             {

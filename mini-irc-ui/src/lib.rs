@@ -8,7 +8,7 @@ use crossterm::{
 };
 use std::{
     collections::BTreeSet,
-    io::{self, Stdout}, ops::Deref,
+    io::{self, Stdout},
 };
 use tui::{
     backend::{Backend, CrosstermBackend},
@@ -274,7 +274,7 @@ impl App {
                         _ => {}
                     }
 
-                    if(is_writing_msg){
+                    if is_writing_msg {
                         return Some(KeyReaction::UserWriting);
                     }
 
