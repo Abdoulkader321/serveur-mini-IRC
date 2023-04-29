@@ -25,37 +25,44 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
     // Premier argument: l'addresse du serveur
     // Deuxième argument: nickname
+    // Troisieme argument: mot_de_passe
     if args.len() != 4 {
         println!("Utilisation: ./client adresse-serveur:port nom_utilisateur mot_de_passe");
         return Ok(());
     }
 
-    // Diffie hellman keys
+    // For Diffie hellman exchange
     let client_secret = EphemeralSecret::new(OsRng);
     let client_public = PublicKey::from(&client_secret);
     let shared_key: Key;
 
     let nickname = &args[2];
     let password = &args[3];
+
     // On se connecte au serveur
     let tcp_stream = std::net::TcpStream::connect(&args[1])?;
 
     let mut typed_tcp_tx = TypedWriter::new(tcp_stream.try_clone()?);
     let mut typed_tcp_rx = TypedReader::new(tcp_stream.try_clone()?);
 
-    // On fait du diffie_hellman et vérifie que ça s'est bien passé
+
+    // On fait du diffie_hellman et on vérifie que ça s'est bien passé
     typed_tcp_tx.send(&Request::Handshake(client_public.to_bytes()), None)?;
     let diffie_hellman_response = typed_tcp_rx.recv(None)?;
 
     if let Some(Response::Handshake(server_public)) = diffie_hellman_response {
+        
+        // C'est reussi, on peut alors calculer la clé de l'echange
         shared_key = Some(
             client_secret
                 .diffie_hellman(&PublicKey::from(server_public))
                 .to_bytes(),
         )
-    } else {
+    } else {           
         return Ok(());
     }
+
+    // Toute communication est desormais chiffrée.
 
     // On envoie le nom d'utilisateur et mot de passe pour vérifier qu'il n'est pas déjà pris.
     typed_tcp_tx.send(
@@ -160,6 +167,8 @@ fn main() -> Result<(), Box<dyn Error>> {
                         };
                     }
                     Some(KeyReaction::UserWriting) => {
+                        // Le client est entrain d'ecrire un message, on notifie le serveur
+
                         let chan = if app.get_current_tab().starts_with('#') {
                             Chan::Public(app.get_current_tab()[1..].to_owned())
                         } else {

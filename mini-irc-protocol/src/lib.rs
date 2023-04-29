@@ -185,8 +185,9 @@ where
         let mut buf = vec![0; size as usize];
         self.stream.read_exact(&mut buf)?;
 
+        // Si on a la clé => on dechiffre. Sinon, c'est un echange diffie hellman
         if let Some(key) = supplied_key {
-            //buf = decrypt(&buf, &key);
+            
             match decrypt(&buf, &key) {
                 Ok(plaintext) => {
                     info!("Data received");
@@ -256,6 +257,7 @@ where
     pub fn send(&mut self, value: &T, supplied_key: Key) -> std::io::Result<()> {
         let mut data: Vec<u8> = bincode::serialize(value).unwrap();
 
+        // Si on a la clé => on chiffre. Sinon, c'est un echange diffie hellman
         if let Some(key) = supplied_key {
             data = encrypt(&data, &key);
         }
@@ -334,6 +336,7 @@ where
         let mut buf = vec![0; size as usize];
         self.stream.read_exact(&mut buf).await?;
 
+        // Si on a la clé => on dechiffre. Sinon, c'est un echange diffie hellman
         if let Some(key) = supplied_key {
             match decrypt(&buf, &key){
                 Ok(plaintext) => {
@@ -422,6 +425,7 @@ where
     pub async fn send(&mut self, value: &T, supplied_key: Key) -> std::io::Result<()> {
         let mut data: Vec<u8> = bincode::serialize(value).unwrap();
 
+        // Si on a la clé => on chiffre. Sinon, c'est un echange diffie hellman
         if let Some(key) = supplied_key {
             data = encrypt(&data, &key);
         }
@@ -550,6 +554,7 @@ where
     }
 }
 
+/// Chiffre les données avec la clé fourni
 pub fn encrypt(data_to_encrypt: &[u8], key: &[u8]) -> Vec<u8> {
     let cipher = Aes256Gcm::new_from_slice(key).unwrap();
 
@@ -562,10 +567,9 @@ pub fn encrypt(data_to_encrypt: &[u8], key: &[u8]) -> Vec<u8> {
     [nonce.to_vec(), ciphertext].concat()
 }
 
+/// Dechiffre les données avec la clé fourni
 pub fn decrypt(data_to_decrypt: &[u8], key: &[u8]) -> Result<Vec<u8>, aes_gcm::Error> {
     let cipher = Aes256Gcm::new((key).into());
-
-    //let plaintext = cipher.decrypt(data_to_decrypt[..12].into(), data_to_decrypt[12..].as_ref()).unwrap();
 
     cipher.decrypt(data_to_decrypt[..12].into(), data_to_decrypt[12..].as_ref())
 }

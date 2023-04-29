@@ -14,6 +14,7 @@ use mini_irc_protocol::Request;
 use mini_irc_protocol::Response;
 use mini_irc_protocol::ResponsePlusKey;
 use rand_core::OsRng;
+use std::env;
 use std::error::Error;
 use std::str::FromStr;
 use tokio::fs::File;
@@ -153,6 +154,7 @@ async fn respond_to_client(
     }
 }
 
+/* Cette fonction a le role du serveur, contient une base de données, interprete et traite les demandes du client. */
 async fn server_database(rx: &mut Receiver<AskRessource>) {
     let mut clients: Vec<Client> = read_client_database("./client_database.txt").await.unwrap(); // Database of clients (connected and not connected)
 
@@ -259,7 +261,6 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                 clients[index].is_connected = false;
 
-
                 let private_channel_name = format!("{username}-privet-channel");
 
                 /* Remove User from channels && remove channel if there is no user*/
@@ -345,14 +346,12 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         &channels,
                         format!("{interlocutor_name}-privet-channel"),
                     );
-                    
-                    if let Some(index) = index_option{
 
+                    if let Some(index) = index_option {
                         if channels[index].sender.send(ressource).is_err() {
                             println!("!! An error occured !!\n {}", line!());
                         }
-
-                    } 
+                    }
                 }
 
                 Chan::Public(channel_name) => {
@@ -397,6 +396,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
     }
 }
 
+/* Quand le client rejoint un channel, on se met en écoute sur les messages broadcast ou directe qu'il peut recevoir et on le lui transfére */
 async fn handle_waiting_for_messages(
     username: String,
     broadcast_receiver: &mut BroadcastReceiverWithList<BroadcastMessage, String>,
@@ -471,6 +471,7 @@ async fn handle_waiting_for_messages(
     }
 }
 
+/* Le client est bien connecté au serveur, on interprete ses requetes. */
 async fn handle_client(
     username: String,
     reader: &mut OwnedReadHalf,
@@ -668,6 +669,7 @@ async fn handle_client(
     }
 }
 
+/* Echange de clés Diffie Hellman entre le serveur et le client */
 async fn diffie_hellman_succeeded(
     server_public: &[u8; 32],
     reader: &mut OwnedReadHalf,
@@ -697,6 +699,8 @@ async fn diffie_hellman_succeeded(
     }
 }
 
+/* Gére la connection du client au serveur, si ça se passe bien,
+on lui crée un channel privé sur lequel il pourra recevoir des messages directe */
 async fn is_client_accepted(
     reader: &mut OwnedReadHalf,
     writer_tx: &mut Sender<ResponsePlusKey>,
@@ -807,9 +811,17 @@ async fn is_client_accepted(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    println!("-- Welcome on the server --\n");
+    let args: Vec<String> = env::args().collect();
 
-    let listener = TcpListener::bind("127.0.0.1:2027").await?;
+    // Premier argument: l'addresse du serveur
+    if args.len() != 2 {
+        println!("Utilisation: ./serveur adresse-serveur:port");
+        return Ok(());
+    }
+
+    let listener = TcpListener::bind(&args[1]).await?;
+
+    println!("-- Welcome! The server is running on {} --\n", &args[1]);
 
     let (tx, mut rx): (Sender<AskRessource>, Receiver<AskRessource>) = mpsc::channel(100);
 
@@ -826,7 +838,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         let (tx_writer, mut rx_writer): (Sender<ResponsePlusKey>, Receiver<ResponsePlusKey>) =
             mpsc::channel(100);
 
-        // Diffie hellman keys
+        // For Diffie hellman exchange
         let server_secret = EphemeralSecret::new(OsRng);
         let server_public = PublicKey::from(&server_secret);
 
@@ -835,6 +847,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         });
 
         tokio::spawn(async move {
+            // On fait du diffie_hellman et on vérifie que ça s'est bien passé
             if let Some(client_public) = diffie_hellman_succeeded(
                 server_public.as_bytes(),
                 &mut reader,
@@ -847,6 +860,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     .to_bytes();
                 let shared_key = Some(shared_key);
 
+                // Gére la connection du client au serveur, cad le client doit d'abord envoyer une Request::Connect..
                 if let Some(username) = is_client_accepted(
                     &mut reader,
                     &mut tx_writer.clone(),
@@ -855,6 +869,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 )
                 .await
                 {
+                    // Comme le client s'est bien connecté, on gére ces requetes
                     handle_client(
                         username,
                         &mut reader,
