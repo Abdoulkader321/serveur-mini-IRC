@@ -30,12 +30,6 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::oneshot;
 use x25519_dalek::{EphemeralSecret, PublicKey};
 
-/* todo  */
-
-/* feat: + Un utilisateur est entrain d'ecrire dans tel channel,
-+ Données dans un fichier
-+ tous les cas sont bien gere normalement */
-
 /// Requête envoyé à la base de données du serveur
 enum AskRessource {
     JoinServer(String, String, oneshot::Sender<bool>),
@@ -55,6 +49,7 @@ enum AskRessource {
     NotifClientIsWriting(String, Chan),
 }
 
+/// Requête envoyé à tous les clients (coté serveur) en ecoute 
 #[derive(Debug, PartialEq, Eq, Clone)]
 enum BroadcastMessage {
     MessageToChannel(String, String, String),
@@ -70,11 +65,13 @@ struct Channel {
     sender: BroadcastSenderWithList<BroadcastMessage, String>,
 }
 
+/// Structure pour representer un client
 struct Client {
     name: String,
     password: String,
     is_connected: bool,
 }
+
 
 fn check_channel_exists(channels: &[Channel], channel_name: String) -> Option<usize> {
     channels
@@ -94,6 +91,7 @@ fn check_user_in_channel(
         .position(|name| *name == username)
 }
 
+/// Envoi tous les paquets reçu aux clients
 async fn handle_writer(writer: &mut OwnedWriteHalf, rx: &mut Receiver<ResponsePlusKey>) {
     let mut typed_writer = AsyncTypedWriter::<_, Response>::new(writer);
 
@@ -102,6 +100,7 @@ async fn handle_writer(writer: &mut OwnedWriteHalf, rx: &mut Receiver<ResponsePl
     }
 }
 
+/// Lis les données se trouvant à 'filepath' et le parse en Vec<Client>
 async fn read_client_database(filepath: &str) -> Result<Vec<Client>, Box<dyn std::error::Error>> {
     let file = File::open(filepath).await?;
     let reader = BufReader::new(file);
@@ -121,6 +120,7 @@ async fn read_client_database(filepath: &str) -> Result<Vec<Client>, Box<dyn std
     Ok(clients)
 }
 
+/// Ecrit les informations contenus dans 'clients', dans le fichier filepath
 async fn write_client_to_database(
     filepath: &str,
     clients: &[Client],
@@ -144,13 +144,14 @@ async fn write_client_to_database(
     Ok(())
 }
 
+/// Transmet des paquets au handle_writer qui lui meme va le transferer au vrai client
 async fn respond_to_client(
     writer_tx: &mut Sender<ResponsePlusKey>,
     object_to_send: Response,
     key: Key,
 ) {
     if writer_tx.send((object_to_send, key)).await.is_err() {
-        println!("!! An error occured !! {}", line!());
+        println!("!! An error occured !!");
     }
 }
 
@@ -162,26 +163,37 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
     loop {
         match rx.recv().await {
-            Some(AskRessource::JoinServer(username, password, resp)) => {
+            Some(AskRessource::JoinServer(username, password, resp)) => {                
+                // Un utilisateur veut se connecter au serveur
+
                 let index_client = clients.iter().position(|client| client.name == username);
                 if let Some(index) = index_client {
-                    let client = &mut clients[index];
+                    // le pseudonyme existe 
 
+                    let client = &mut clients[index];
+                    
                     if client.is_connected {
+                        // L'utilisateur a deja une session connecté
+
                         if let Err(e) = resp.send(false) {
-                            println!("!! An error occured in send: {e} !! {}", line!());
+                            println!("!! An error occured in send: {e} !!");
                         }
                     } else if client.password == password {
+                        // L'utilisateur n'est pas connecté et a le bon mot de passe
+
                         if let Err(e) = resp.send(true) {
-                            println!("!! An error occured in send: {e} !! {}", line!());
-                        }
+                            println!("!! An error occured in send: {e} !!");
+                        }                        
                         client.is_connected = true;
                     } else if let Err(e) = resp.send(false) {
-                        println!("!! An error occured in send: {e} !! {}", line!());
+                        // Sinon, on refuse l'accés au serveur
+                        println!("!! An error occured in send: {e} !!");
                     }
                 } else {
+                    // Premiere fois que quelqu'un se connecte avec ce pseudonyme
+
                     if let Err(e) = resp.send(true) {
-                        println!("!! An error occured in send: {e} !! {}", line!());
+                        println!("!! An error occured in send: {e} !!");
                     }
 
                     let client = Client {
@@ -192,12 +204,15 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     clients.push(client);
                 }
 
+                // On enregistre dans le fichier puisque le serveur peut etre interrompu brusquement
                 write_client_to_database("./client_database.txt", &clients)
                     .await
                     .unwrap();
             }
 
             Some(AskRessource::CreatePrivateChannel(username, resp)) => {
+                // On crée un channel pour un utilisateur pour qu'il puisse y recevoir des messages privés
+
                 let mut new_sender: BroadcastSenderWithList<BroadcastMessage, String> =
                     BroadcastSenderWithList::new(50);
                 let receiver = new_sender.subscribe(username.clone());
@@ -209,7 +224,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 };
 
                 if resp.send(receiver).is_err() {
-                    println!("!! An error occured !! {}", line!());
+                    println!("!! An error occured !!");
                 } else {
                     channels.push(new_channel);
                 }
@@ -218,21 +233,23 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
             Some(AskRessource::AskToJoinChannel(channel_name, username, resp)) => {
                 match check_channel_exists(&channels, channel_name.clone()) {
                     Some(index) => {
+                        // Le channel existe
+
                         let receiver = channels[index].sender.subscribe(username.clone());
 
                         if resp.send(receiver).is_err() {
-                            println!("!! An error occured !! {}", line!());
+                            println!("!! An error occured !!");
                         }
 
-                        // Informer les autres utilisateurs
+                        // En informer les autres utilisateurs
                         let ressource =
                             BroadcastMessage::NewUserJoin(username.clone(), channel_name);
                         if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !! {}", line!());
+                            println!("!! An error occured !!");
                         }
                     }
                     None => {
-                        // Channel created
+                        // Le channel n'existe pas, on le crée
 
                         let mut new_sender: BroadcastSenderWithList<BroadcastMessage, String> =
                             BroadcastSenderWithList::new(50);
@@ -246,24 +263,25 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                         channels.push(new_channel);
 
                         if resp.send(receiver).is_err() {
-                            println!("!! An error occured !! {}", line!());
+                            println!("!! An error occured !!");
                         }
                     }
                 }
             }
 
             Some(AskRessource::UserDisconnected(username)) => {
-                /* Remove user from connected clients array */
+                // L'utilisateur s'est deconnecté brusquement
+
                 let index = clients
                     .iter()
                     .position(|client| client.name == username)
                     .unwrap();
-
+                
                 clients[index].is_connected = false;
 
                 let private_channel_name = format!("{username}-privet-channel");
 
-                /* Remove User from channels && remove channel if there is no user*/
+                // On le supprime des channels && on supprime le channel s'il n'y a plus personne
                 for channel_index in 0..channels.len() {
                     if check_user_in_channel(&channels, channel_index, username.clone()).is_some()
                         || channels[channel_index].name == private_channel_name
@@ -274,7 +292,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                             true,
                         );
                         if channels[channel_index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n  {}", line!());
+                            println!("!! An error occured !!\n");
                         }
 
                         if channels[channel_index].sender.into_subscribers().is_empty() {
@@ -283,31 +301,34 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                     }
                 }
 
-                // As the user left, we delete his privet channel
+                // Comme l'utilisateur est parti, on supprime son channel privé
                 let index =
                     check_channel_exists(&channels, format!("{username}-privet-channel")).unwrap();
                 channels.swap_remove(index);
             }
 
             Some(AskRessource::TransferMessageToChannel(username, channel_name, content, resp)) => {
+                // On doit transferer le message donné au channel donnée
+
                 let mut found = false;
 
                 let channel_index = check_channel_exists(&channels, channel_name.clone());
 
-                if let Some(index) = channel_index {
+                if let Some(index) = channel_index {                    
                     if check_user_in_channel(&channels, index, username.clone()).is_some() {
+                        // Le channel existe et l'emetteur est dedans
                         found = true;
                         let ressource =
                             BroadcastMessage::MessageToChannel(username, channel_name, content);
 
                         if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n  {}", line!());
+                            println!("!! An error occured !!\n");
                         }
                     }
                 }
 
                 if resp.send(found).is_err() {
-                    println!("!! An error occured !!\n {}", line!());
+                    println!("!! An error occured !!\n");
                 }
             }
 
@@ -317,27 +338,33 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 message,
                 resp,
             )) => {
+                // On doit transferer le message donné au receveur donné
+
                 let mut found = false;
                 let channel_name = format!("{receiver_name}-privet-channel");
 
                 let channel_index = check_channel_exists(&channels, channel_name.clone());
 
                 if let Some(index) = channel_index {
+                    // Le receveur est connecté 
+
                     found = true;
 
                     let ressource = BroadcastMessage::DirectMessage(sender_name, message);
 
                     if channels[index].sender.send(ressource).is_err() {
-                        println!("!! An error occured !!\n {}", line!());
+                        println!("!! An error occured !!\n");
                     }
                 }
 
                 if resp.send(found).is_err() {
-                    println!("!! An error occured !!\n {}", line!());
+                    println!("!! An error occured !!\n");
                 }
             }
 
             Some(AskRessource::NotifClientIsWriting(username, channel)) => match &channel {
+                // Un utilisateur est entrain d'ecrire un message
+
                 Chan::Private(interlocutor_name) => {
                     let ressource =
                         BroadcastMessage::NotifClientIsWriting(username, channel.clone());
@@ -349,7 +376,7 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                     if let Some(index) = index_option {
                         if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n {}", line!());
+                            println!("!! An error occured !!\n");
                         }
                     }
                 }
@@ -360,23 +387,26 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
 
                     let index = check_channel_exists(&channels, channel_name.clone()).unwrap();
                     if channels[index].sender.send(ressource).is_err() {
-                        println!("!! An error occured !!\n {}", line!());
+                        println!("!! An error occured !!\n");
                     }
                 }
             },
 
             Some(AskRessource::AskToLeaveChannel(username, channel_name, resp)) => {
+                // Un utilisateur veut quitter un channel
+
                 let mut found = false;
                 let channel_index = check_channel_exists(&channels, channel_name.clone());
 
                 if let Some(index) = channel_index {
                     if check_user_in_channel(&channels, index, username.clone()).is_some() {
+                        // Le channel existe et l'utilisateur est dedans
                         found = true;
 
                         let ressource = BroadcastMessage::Leave(username, channel_name, false);
 
                         if channels[index].sender.send(ressource).is_err() {
-                            println!("!! An error occured !!\n {}", line!());
+                            println!("!! An error occured !!\n");
                         }
 
                         if channels[index].sender.into_subscribers().is_empty() {
@@ -386,11 +416,11 @@ async fn server_database(rx: &mut Receiver<AskRessource>) {
                 }
 
                 if resp.send(found).is_err() {
-                    println!("!! An error occured !!\n {}", line!());
+                    println!("!! An error occured !!\n");
                 }
             }
             _ => {
-                println!("!! An error occured !! {}", line!());
+                println!("!! An error occured !!");
             }
         }
     }
@@ -471,7 +501,7 @@ async fn handle_waiting_for_messages(
     }
 }
 
-/* Le client est bien connecté au serveur, on interprete ses requetes. */
+/* Le client est bien connecté au serveur, on gere ses requetes. */
 async fn handle_client(
     username: String,
     reader: &mut OwnedReadHalf,
@@ -493,6 +523,8 @@ async fn handle_client(
                 match thread_tx.send(ressource).await {
                     Ok(_) => match rx.await {
                         Ok(mut broadcast_receiver) => {
+
+                            // Envoyer un AckJoin au client
                             respond_to_client(
                                 writer_tx,
                                 Response::AckJoin {
@@ -506,6 +538,7 @@ async fn handle_client(
                             let mut copy_writer_tx = writer_tx.clone();
                             let copy_username = username.clone();
 
+                            // On se met en ecoute des messages de ce channel
                             tokio::spawn(async move {
                                 handle_waiting_for_messages(
                                     copy_username,
@@ -518,11 +551,11 @@ async fn handle_client(
                             });
                         }
                         Err(e) => {
-                            println!("!! An error occured {e} !! {}", line!());
+                            println!("!! An error occured {e} !!");
                         }
                     },
                     _ => {
-                        println!("!! An error occured !! {}", line!());
+                        println!("!! An error occured !!");
                     }
                 }
             }
@@ -530,6 +563,8 @@ async fn handle_client(
             Ok(Some(Request::Message { to, content })) => {
                 match to {
                     MessageReceiver::Channel(channel_name) => {
+                        // Un message a ete envoyé dans un channel
+
                         let (tx, rx) = oneshot::channel();
                         let ressource = AskRessource::TransferMessageToChannel(
                             username.clone(),
@@ -538,9 +573,12 @@ async fn handle_client(
                             tx,
                         );
 
+                        // On le transfere aux autres utilisateurs du meme channel
                         match thread_tx.send(ressource).await {
                             Ok(_) => match rx.await {
                                 Ok(false) => {
+                                    // Message non transferer 
+
                                     respond_to_client(
                                         writer_tx,
                                         Response::Error(ErrorType::Informative(
@@ -552,6 +590,8 @@ async fn handle_client(
                                     .await;
                                 }
                                 Ok(true) => {
+                                    // Message transferer avec succés
+
                                     println!(
                                         "{} sent a message in the channel {} \n",
                                         username.clone(),
@@ -559,15 +599,17 @@ async fn handle_client(
                                     );
                                 }
                                 Err(_) => {
-                                    println!("!! An error occured in send !! {}", line!());
+                                    println!("!! An error occured in send !!");
                                 }
                             },
                             Err(e) => {
-                                println!("!! An error occured in send: {e} !! {}", line!());
+                                println!("!! An error occured in send: {e} !!");
                             }
                         }
                     }
                     MessageReceiver::User(receiver_name) => {
+                        // Un message directe privé a ete envoyé
+
                         let (tx, rx) = oneshot::channel();
                         let ressource = AskRessource::TransferMessageToAClient(
                             username.clone(),
@@ -576,10 +618,13 @@ async fn handle_client(
                             tx,
                         );
 
+                        // On le transfere à son interlocuteur
                         match thread_tx.send(ressource).await {
                             Ok(_) => {
                                 match rx.await {
                                     Ok(true) => {
+                                        // Message transferer avec succés
+
                                         println!(
                                             "{} sent a private message to {} \n",
                                             username.clone(),
@@ -588,6 +633,8 @@ async fn handle_client(
                                     }
 
                                     Ok(false) => {
+                                        // Message non transferer
+
                                         respond_to_client(
                                     writer_tx,
                                     Response::Error(ErrorType::DirectMessageReceiverNotFoundOrLeftTheServer(receiver_name)),
@@ -596,19 +643,21 @@ async fn handle_client(
                                 .await;
                                     }
                                     Err(e) => {
-                                        println!("!! An error occured in send: {e} !! {}", line!());
+                                        println!("!! An error occured in send: {e} !!");
                                     }
                                 }
                             }
 
                             Err(e) => {
-                                println!("!! An error occured in send: {e} !! {}", line!());
+                                println!("!! An error occured in send: {e} !!");
                             }
                         }
                     }
                 }
             }
             Ok(Some(Request::LeaveChan(channel_name))) => {
+                // L'utilisateur veut quitter le channel donné
+
                 let (tx, rx) = oneshot::channel();
 
                 let ressource =
@@ -617,9 +666,13 @@ async fn handle_client(
                 match thread_tx.send(ressource).await {
                     Ok(_) => match rx.await {
                         Ok(true) => {
+                            // Quitter avec succés
+
                             println!("{} left the channel {}", username.clone(), channel_name);
                         }
                         _ => {
+                            // Il y a eu une erreur 
+
                             respond_to_client(
                                 writer_tx,
                                 Response::Error(ErrorType::Informative(
@@ -632,31 +685,35 @@ async fn handle_client(
                         }
                     },
                     Err(_) => {
-                        println!("!! An error occured in send: !! {}", line!());
+                        println!("!! An error occured in send: !!");
                     }
                 }
             }
 
             Ok(Some(Request::NotifClientIsWriting(username, channel))) => {
+                // Un utilisateur est entrain d'ecrire dans un channel
+
                 let ressource =
                     AskRessource::NotifClientIsWriting(username.clone(), channel.clone());
 
                 match thread_tx.send(ressource).await {
                     Ok(_) => {}
                     Err(_) => {
-                        println!("!! An error occured in send: !! {}", line!());
+                        println!("!! An error occured in send: !!");
                     }
                 }
             }
 
             Err(_) => {
+                // L'utilisateur s'est deconnecté brusquement
+
                 let ressource = AskRessource::UserDisconnected(username.clone());
                 match thread_tx.send(ressource).await {
                     Ok(_) => {
                         println!("-- {} left the server -- \n", username);
                     }
                     _ => {
-                        println!("!! An error occured !! {}", line!());
+                        println!("!! An error occured !!");
                     }
                 }
 
@@ -674,17 +731,20 @@ async fn diffie_hellman_succeeded(
     server_public: &[u8; 32],
     reader: &mut OwnedReadHalf,
     writer_tx: &mut Sender<ResponsePlusKey>,
-) -> Option<[u8; 32]> {
+) -> Key {
     let mut typed_reader = AsyncTypedReader::<_, Request>::new(reader);
 
     match typed_reader.recv(None).await {
+        // On gère la premiere requete de l'utilisateur.
+
         Ok(Some(Request::Handshake(client_public))) => {
+            // Echange diffi hellman
             respond_to_client(writer_tx, Response::Handshake(*server_public), None).await;
 
             Some(client_public)
         }
 
-        Ok(_) => {
+        Ok(_) => {                        
             respond_to_client(
                 writer_tx,
                 Response::Error(ErrorType::Informative(
@@ -711,7 +771,12 @@ async fn is_client_accepted(
 
     match typed_reader.recv(key).await {
         Ok(Some(connection)) => {
+            // On gère la deuxieme requete de l'utilisateur.
+
             if let Request::Connect(username, password) = connection {
+                // L'utilisateur demande à rejoindre le serveur et s'authentifie
+
+                // On en informe le serveur qui va soit accepte ou refuser.
                 let (tx, rx) = oneshot::channel();
                 let ressource = AskRessource::JoinServer(username.clone(), password, tx);
 
@@ -719,6 +784,8 @@ async fn is_client_accepted(
                     Ok(_) => match rx.await {
                         Ok(response) => {
                             if response {
+                                // Utilisateur accepté 
+
                                 println!("-- Connection from {} accepted --\n", username);
 
                                 /* Respond to client that he is accepted on the server */
@@ -763,6 +830,7 @@ async fn is_client_accepted(
 
                                 return Some(username.clone());
                             } else {
+                                // Utilisateur refusé, le notifier
                                 println!("-- Connection from {} refused --\n", username);
 
                                 respond_to_client(
@@ -777,14 +845,16 @@ async fn is_client_accepted(
                             }
                         }
                         Err(e) => {
-                            println!("!! An error occured in receiving : {e} !!  {}", line!());
+                            println!("!! An error occured in receiving : {e} !!");
                         }
                     },
                     Err(e) => {
-                        println!("!! An error occured in send: {e} !! {}", line!());
+                        println!("!! An error occured in send: {e} !!");
                     }
                 }
             } else {
+                // L'utilisateur ne respect pas le protocol
+
                 println!("-- One user do not respect the protocol : quicked out --\n");
                 respond_to_client(
                     writer_tx,
@@ -798,11 +868,11 @@ async fn is_client_accepted(
         }
 
         Ok(None) => {
-            println!("!! An error occured in decryption mode !!, {}", line!());
+            println!("!! An error occured in decryption mode !!");
         }
 
         _ => {
-            println!("!! An error occured: !!, {}", line!());
+            println!("!! An error occured: !!");
         }
     }
 
@@ -854,11 +924,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 &mut tx_writer.clone(),
             )
             .await
-            {
+            {                   
                 let shared_key = server_secret
                     .diffie_hellman(&PublicKey::from(client_public))
                     .to_bytes();
-                let shared_key = Some(shared_key);
+                let shared_key:Key = Some(shared_key);            
 
                 // Gére la connection du client au serveur, cad le client doit d'abord envoyer une Request::Connect..
                 if let Some(username) = is_client_accepted(
@@ -869,7 +939,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 )
                 .await
                 {
-                    // Comme le client s'est bien connecté, on gére ces requetes
+                    // Comme le client s'est bien connecté, on gére ses requetes
                     handle_client(
                         username,
                         &mut reader,

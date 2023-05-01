@@ -45,20 +45,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut typed_tcp_tx = TypedWriter::new(tcp_stream.try_clone()?);
     let mut typed_tcp_rx = TypedReader::new(tcp_stream.try_clone()?);
 
-
     // On fait du diffie_hellman et on vérifie que ça s'est bien passé
     typed_tcp_tx.send(&Request::Handshake(client_public.to_bytes()), None)?;
     let diffie_hellman_response = typed_tcp_rx.recv(None)?;
 
     if let Some(Response::Handshake(server_public)) = diffie_hellman_response {
-        
         // C'est reussi, on peut alors calculer la clé de l'echange
         shared_key = Some(
             client_secret
                 .diffie_hellman(&PublicKey::from(server_public))
                 .to_bytes(),
-        )
-    } else {           
+        );
+    } else {
         return Ok(());
     }
 
@@ -234,6 +232,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                     }
 
                     Response::Error(ErrorType::Informative(msg)) => {
+                        // On a reçu une erreur informative du serveur, notifier le serveur 
                         app.set_notification(msg);
                     }
 
