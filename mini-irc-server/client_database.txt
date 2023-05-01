@@ -1,4 +1,0 @@
-Alice pass1
-Bob pass2
-Charlie pass3
-Eve pass4
