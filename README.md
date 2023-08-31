@@ -2,6 +2,13 @@
 
 ## Auteur: Aboulkader MOUSSA MOHAMED
 
+```L'objectif``` de ce projet est de compléter les fonctionnalités du serveur mini-IRC par des aspects de sécurité. 
+
+Nous avons donc implementé:
+- Fonctionnalités de base du serveur mini-IRC.
+- Fonctionnalités additionnelles du serveur mini-IRC: messages directs, listes d'utilisateurs par canal IRC, réservation de pseudonymes.
+- Confidentialité des échanges entre client et serveur.
+
 ## `Sécurité entre client et serveur`
 
 Nous avons choisi d'utiliser le chiffrement symétrique avec l'algorithme AES en mode GCM, car celui-ci est rapide et assure à la fois la confidentialité et l'intégrité des données.
